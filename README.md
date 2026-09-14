@@ -47,7 +47,7 @@ sudo bash install-hashcake.sh
 无法稳定访问 GitHub 的服务器使用下面的通用管理入口。该命令不绑定当前已安装版本；选择安装或更新时，安装器会自动查找官方最新稳定版，并根据 SHA256SUMS 校验下载文件：
 
 ```bash
-bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@579ee1f8d58ac05268aecc1be6be3f63a7326cee/install.sh)
+bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@b8256bc163537f0c1b663e7b5b3099e128fd7845/install.sh)
 ```
 
 ### Windows
