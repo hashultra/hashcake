@@ -553,6 +553,42 @@ PY
   fi
 }
 
+# The daemon's Web UI persists a port override under security.admin_port in
+# admin.json; it wins over the port recorded in install.env / the systemd unit
+# so an upgrade cannot silently revert the operator's choice. The bind host
+# still comes from the supervisor metadata. An explicit HASHCAKE_ADMIN_BIND
+# environment variable overrides this because load_install_env() resolves
+# ADMIN_BIND from it first.
+apply_persisted_admin_port() {
+  [ -n "${SAVED_ADMIN_BIND:-}" ] || return 0
+  command_exists python3 || return 0
+  [ -s "${STATE_DIR}/admin.json" ] || return 0
+  local port
+  port="$(python3 - "${STATE_DIR}/admin.json" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+if os.path.islink(path) or not os.path.isfile(path):
+    raise SystemExit(0)
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    raise SystemExit(0)
+security = data.get("security")
+if not isinstance(security, dict):
+    raise SystemExit(0)
+port = security.get("admin_port")
+if isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535:
+    print(port)
+PY
+)"
+  [ -n "${port}" ] || return 0
+  SAVED_ADMIN_BIND="$(host_from_bind "${SAVED_ADMIN_BIND}"):${port}"
+}
+
 load_install_env() {
   SAVED_ADMIN_BIND=""
   SAVED_URL_PREFIX=""
@@ -563,6 +599,7 @@ load_install_env() {
   else
     load_existing_web_settings
   fi
+  apply_persisted_admin_port
   ADMIN_BIND="${HASHCAKE_ADMIN_BIND:-${ADMIN_BIND:-${SAVED_ADMIN_BIND:-}}}"
   URL_PREFIX="${HASHCAKE_URL_PREFIX:-${URL_PREFIX:-${SAVED_URL_PREFIX:-}}}"
   HTTPS_ACTIVE="${HASHCAKE_HTTPS_ACTIVE:-${HTTPS_ACTIVE:-${SAVED_HTTPS_ACTIVE:-}}}"
@@ -611,15 +648,16 @@ configure_web_defaults_for_update() {
 
 persist_admin_security() {
   command_exists python3 || die "缺少 python3，无法安全写入 ${STATE_DIR}/admin.json"
-  local admin_json="${STATE_DIR}/admin.json"
-  run_as_service_user python3 - "${admin_json}" "${URL_PREFIX}" "${HTTPS_ACTIVE}" <<'PY'
+  local admin_json="${STATE_DIR}/admin.json" admin_port
+  admin_port="$(bind_port "${ADMIN_BIND}")"
+  run_as_service_user python3 - "${admin_json}" "${URL_PREFIX}" "${HTTPS_ACTIVE}" "${admin_port}" <<'PY'
 import json
 import os
 import stat
 import sys
 import tempfile
 
-path, prefix, https_active = sys.argv[1:4]
+path, prefix, https_active, admin_port = sys.argv[1:5]
 data = {}
 try:
     current = os.lstat(path)
@@ -639,6 +677,7 @@ security["version"] = int(security.get("version", 2) or 2)
 security["url_prefix"] = prefix
 security["https_enabled"] = False
 security["https_active"] = https_active.lower() in ("1", "true", "yes", "on")
+security["admin_port"] = int(admin_port)
 security.setdefault("offline_alerts_enabled", True)
 security.setdefault("ip_blacklist", [])
 security.setdefault("wallet_blacklist", [])
