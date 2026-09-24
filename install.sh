@@ -8,9 +8,10 @@ RELEASE_BRANCH="${HASHCAKE_RELEASE_BRANCH:-main}"
 RELEASE_PLATFORM="${HASHCAKE_RELEASE_PLATFORM:-linux-amd64}"
 RELEASE_SUMS_PATH="SHA256SUMS"
 RELEASE_MIRROR_BASE="${HASHCAKE_RELEASE_MIRROR_BASE-https://cdn.jsdmirror.com/gh/${RELEASE_REPO}@${RELEASE_BRANCH}}"
-# 国内入口使用的不可变提交号（发行时与 prepare-releases.sh / check-release-readiness.sh 的
-# DEFAULT_CDN_REF 保持一致）。分支清单存在缓存窗口，而这个提交的清单不可变，因此它同时也是
-# 没有外网时的版本兜底来源。
+# 国内入口上一次公开的不可变提交号，用于「没有外网时」的清单兜底：分支清单有缓存窗口，
+# 而提交的清单不可变。它随安装器发布前进——每次改动安装器时把这里更新为上一次公开发布的
+# 锚点提交（prepare-releases.sh 的 DEFAULT_CDN_REF 用最新锚点；这里刻意落后一代，因为
+# 安装器无法在写入时知道自己将被提交到哪个 commit）。
 INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-89999b89019e82b17d33cc9e14878610947d2946}"
 SERVICE_NAME="${HASHCAKE_SERVICE:-hashcake}"
 SERVICE_USER="${HASHCAKE_USER:-hashcake}"
