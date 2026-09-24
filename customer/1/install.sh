@@ -1802,33 +1802,110 @@ verify_file_sha256() {
   ok "下载文件 SHA-256 校验通过"
 }
 
+# 国内镜像对 `@分支`（如 @main）的清单存在缓存窗口（`stale-while-revalidate` 以小时计）。
+# 清单落后时，「最新稳定版」会被静默解析成上一个版本，甚至查不到目标版本的校验值；而下载和
+# 校验都成功，所以不会触发任何回退。下面几个函数只解决这一件事：镜像清单缺失或落后时，
+# best-effort 再要一份 GitHub 清单；拿不到（无外网、超时、限流）就维持镜像结果。
+sums_lookup_github() {
+  local dst="$1"
+  command -v curl >/dev/null 2>&1 || return 1
+  curl --fail --silent --show-error --location --connect-timeout 4 --max-time 8 \
+    -H "Accept: application/vnd.github.raw" \
+    "https://api.github.com/repos/${RELEASE_REPO}/contents/${RELEASE_SUMS_PATH}?ref=${RELEASE_BRANCH}" \
+    -o "${dst}" 2>/dev/null || return 1
+  [ -s "${dst}" ]
+}
+
+# 只有「清单取自国内镜像、且没有 GitHub token」时才需要上面那份兜底。
+sums_mirror_may_be_stale() {
+  [ -n "${RELEASE_MIRROR_BASE}" ] && [ -z "${GITHUB_TOKEN:-}" ] && [ -z "${GH_TOKEN:-}" ]
+}
+
+# 从清单里取某个资产的校验值；缺失或不是 64 位十六进制时输出空串。
+sums_sha256_for() {
+  local sums_file="$1" asset_path="$2" expected
+  expected="$(awk -v wanted="${asset_path}" '$2 == wanted { print $1; exit }' "${sums_file}" 2>/dev/null || true)"
+  expected="$(printf '%s' "${expected}" | tr 'A-F' 'a-f')"
+  if [ "${#expected}" -ne 64 ] || [[ "${expected}" == *[!0-9a-f]* ]]; then
+    return 0
+  fi
+  printf '%s' "${expected}"
+}
+
+# 从一份 SHA256SUMS 里挑出该平台的最新版本资产名；没有可选项时返回非 0。
+latest_asset_from_sums() {
+  local sums_file="$1" prefix="$2" names name=""
+  [ -s "${sums_file}" ] || return 1
+  names="$(awk -v platform="${RELEASE_PLATFORM}/" '
+    index($2, platform) == 1 {
+      name = $2
+      sub(/^.*\//, "", name)
+      print name
+    }
+  ' "${sums_file}" 2>/dev/null || true)"
+  [ -n "${names}" ] || return 1
+  if [ "${ALLOW_PRERELEASE}" = "1" ]; then
+    name="$(printf '%s\n' "${names}" \
+      | grep -E "^${prefix}-[0-9][0-9A-Za-z._-]*-${RELEASE_PLATFORM}$" \
+      | sort -V \
+      | tail -n 1 || true)"
+  else
+    name="$(printf '%s\n' "${names}" \
+      | grep -E "^${prefix}-[0-9]+\.[0-9]+\.[0-9]+-${RELEASE_PLATFORM}$" \
+      | sort -V \
+      | tail -n 1 || true)"
+  fi
+  [ -n "${name}" ] || return 1
+  printf '%s' "${name}"
+}
+
+# 候选版本是否比当前版本更新（入参是资产名，sort -V 直接按内嵌版本号比较）。
+version_is_newer() {
+  local candidate="$1" current="$2"
+  [ "${candidate}" != "${current}" ] || return 1
+  [ "$(printf '%s\n%s\n' "${current}" "${candidate}" | sort -V | tail -n 1)" = "${candidate}" ]
+}
+
 repo_asset_sha256() {
-  local asset_path="$1" sums_file expected
+  local asset_path="$1" sums_file expected github_file
   sums_file="$(mktemp "${INSTALL_DIR}/.SHA256SUMS.XXXXXX")"
   if ! download_repo_file "${RELEASE_SUMS_PATH}" "${sums_file}"; then
     rm -f -- "${sums_file}"
-    die "定制版 ${EDITION_ID} 发布目录缺少 SHA256SUMS，已拒绝安装未经校验的定制二进制"
+        die "定制版 ${EDITION_ID} 发布目录缺少 SHA256SUMS，已拒绝安装未经校验的定制二进制"
   fi
-  expected="$(awk -v wanted="${asset_path}" '$2 == wanted { print $1; exit }' "${sums_file}")"
+  expected="$(sums_sha256_for "${sums_file}" "${asset_path}")"
+  if [ -z "${expected}" ] && sums_mirror_may_be_stale; then
+    github_file="$(mktemp "${INSTALL_DIR}/.SHA256SUMS.github.XXXXXX")"
+    if sums_lookup_github "${github_file}"; then
+      expected="$(sums_sha256_for "${github_file}" "${asset_path}")"
+      [ -z "${expected}" ] || printf '%s\n' "${yellow}注意:${reset} 国内镜像的发布清单尚未刷新，${asset_path} 的校验值取自 GitHub" >&2
+    fi
+    rm -f -- "${github_file}"
+  fi
   rm -f -- "${sums_file}"
-  if [ "${#expected}" -ne 64 ] || [[ "${expected}" == *[!0-9A-Fa-f]* ]]; then
+  if [ -z "${expected}" ]; then
     die "SHA256SUMS 中缺少 ${asset_path} 的有效校验值"
   fi
   printf '%s' "${expected}"
 }
 
 repo_asset_sha256_optional() {
-  local asset_path="$1" sums_file expected
+  local asset_path="$1" sums_file expected github_file
   sums_file="$(mktemp "${INSTALL_DIR}/.SHA256SUMS.XXXXXX")"
   if ! download_repo_file "${RELEASE_SUMS_PATH}" "${sums_file}"; then
     rm -f -- "${sums_file}"
     return 1
   fi
-  expected="$(awk -v wanted="${asset_path}" '$2 == wanted { print $1; exit }' "${sums_file}")"
-  rm -f -- "${sums_file}"
-  if [ "${#expected}" -ne 64 ] || [[ "${expected}" == *[!0-9A-Fa-f]* ]]; then
-    return 1
+  expected="$(sums_sha256_for "${sums_file}" "${asset_path}")"
+  if [ -z "${expected}" ] && sums_mirror_may_be_stale; then
+    github_file="$(mktemp "${INSTALL_DIR}/.SHA256SUMS.github.XXXXXX")"
+    if sums_lookup_github "${github_file}"; then
+      expected="$(sums_sha256_for "${github_file}" "${asset_path}")"
+    fi
+    rm -f -- "${github_file}"
   fi
+  rm -f -- "${sums_file}"
+  [ -n "${expected}" ] || return 1
   printf '%s' "${expected}"
 }
 
@@ -1839,32 +1916,28 @@ asset_name_for_version() {
     return
   fi
   command -v curl >/dev/null 2>&1 || die "缺少 curl，无法查询 latest Release"
-  local sums_file names name
+  local sums_file name github_file github_name
   sums_file="$(mktemp "${TMPDIR:-/tmp}/hashcake-SHA256SUMS.XXXXXX")"
   if ! download_repo_file "${RELEASE_SUMS_PATH}" "${sums_file}"; then
     rm -f -- "${sums_file}"
     die "无法读取 ${RELEASE_REPO}/${RELEASE_SUMS_PATH}，无法确定 Edition ${EDITION_ID} 最新版本"
   fi
-  names="$(awk -v platform="${RELEASE_PLATFORM}/" '
-    index($2, platform) == 1 {
-      name = $2
-      sub(/^.*\//, "", name)
-      print name
-    }
-  ' "${sums_file}")"
+  name="$(latest_asset_from_sums "${sums_file}" "${prefix}" || true)"
   rm -f -- "${sums_file}"
-  if [ "${ALLOW_PRERELEASE}" = "1" ]; then
-    name="$(printf '%s\n' "${names}" \
-      | grep -E "^${prefix}-[0-9][0-9A-Za-z._-]*-${RELEASE_PLATFORM}$" \
-      | sort -V \
-      | tail -n 1)"
-  else
-    name="$(printf '%s\n' "${names}" \
-      | grep -E "^${prefix}-[0-9]+\.[0-9]+\.[0-9]+-${RELEASE_PLATFORM}$" \
-      | sort -V \
-      | tail -n 1)"
-  fi
   [ -n "${name}" ] || die "无法在 ${RELEASE_REPO}/${RELEASE_SUMS_PATH} 找到 ${prefix} 的定制版发布文件"
+
+  # 镜像清单落后时，按 GitHub 清单里更新的那个版本走；下载路径仍是镜像优先。
+  if sums_mirror_may_be_stale; then
+    github_file="$(mktemp "${TMPDIR:-/tmp}/hashcake-GitHub-SHA256SUMS.XXXXXX")"
+    if sums_lookup_github "${github_file}"; then
+      github_name="$(latest_asset_from_sums "${github_file}" "${prefix}" || true)"
+      if [ -n "${github_name}" ] && version_is_newer "${github_name}" "${name}"; then
+        printf '%s\n' "${yellow}注意:${reset} 国内镜像的发布清单尚未刷新（镜像最新 ${name}，GitHub 最新 ${github_name}），已按 GitHub 清单选择版本；下载仍优先使用国内镜像" >&2
+        name="${github_name}"
+      fi
+    fi
+    rm -f -- "${github_file}"
+  fi
   printf '%s' "${name}"
 }
 
