@@ -12,7 +12,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/hashultra/hashcake/main/cust
 国内镜像的清单缓存可能滞后：安装器会在解析版本时与 GitHub 清单比对，镜像落后时按更新的版本安装，下载仍优先使用国内镜像。
 
 ```bash
-bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@89999b89019e82b17d33cc9e14878610947d2946/customer/1/install.sh)
+bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@846a78a96bc799eb7a2c3d893ee18d4facfcfe67/customer/1/install.sh)
 ```
 
 ## Windows 下载
