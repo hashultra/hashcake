@@ -40,6 +40,7 @@ EXPECTED_BINARY_VERSION=""
 WEB_PORT_MIN="${HASHCAKE_WEB_PORT_MIN:-10000}"
 WEB_PORT_MAX="${HASHCAKE_WEB_PORT_MAX:-60000}"
 FIRST_WEB_TOKEN=""
+ADMIN_API_BASE=""
 # The binary's pending bootstrap window is fixed at ten minutes.  This is
 # deliberately a display constant only: the server remains the source of
 # truth; installer confirmation only makes its hash survive the final restart.
@@ -2887,6 +2888,546 @@ uninstall() {
   ok "已卸载 ${APP_NAME}"
 }
 
+
+# ── Web 后台账号密码 ────────────────────────────────────────────────────
+#
+# 后台账号（owner/admin）存在 ${STATE_DIR}/admin.json 里，密码只以 Argon2id 的
+# PHC 串落盘，脚本不重复实现这套哈希，而是走 daemon 自己已发布的 HTTP 接口：
+#
+#   改密：POST /api/v1/admin/login 换会话令牌 → PATCH /api/v1/admin/accounts/{id}
+#   找回：清空 accounts 后重启，daemon 会重新打印一次性 bootstrap 令牌，再用它
+#         POST /api/v1/admin/accounts 重建首个 Owner（这正是 daemon 的既有语义：
+#         账号表为空且没有可用 setup 凭据时重新武装首启令牌，避免永久锁死）。
+#
+# 两条路径都只依赖接口契约，不需要重新编译或重新下载二进制。
+
+admin_api_base_url() {
+  local scheme="http" host port
+  case "${HTTPS_ACTIVE:-}" in true|1|yes|on) scheme="https" ;; esac
+  host="$(host_from_bind "${ADMIN_BIND}")"
+  port="$(bind_port "${ADMIN_BIND}")"
+  case "${host}" in
+    0.0.0.0|"") host="127.0.0.1" ;;
+    ::|\[::\]) host="[::1]" ;;
+    *) host="$(format_url_host "${host}")" ;;
+  esac
+  printf '%s://%s:%s' "${scheme}" "${host}" "${port}"
+}
+
+# install.env 里的 HTTPS 只是安装当时的快照；Web 后台改过之后，只有 admin.json
+# 是 daemon 真正读取的权威值。这里以 admin.json 为准，避免用 http 去打 TLS 端口。
+load_admin_api_settings() {
+  load_install_env
+  [ -n "${ADMIN_BIND:-}" ] || die "未找到 Web 后台监听地址，请先执行 install 或 web-settings"
+  local https_value=""
+  https_value="$(python3 - "${STATE_DIR}/admin.json" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+if os.path.islink(path) or not os.path.isfile(path):
+    raise SystemExit(0)
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    raise SystemExit(0)
+security = data.get("security")
+if isinstance(security, dict) and isinstance(security.get("https_active"), bool):
+    print("true" if security["https_active"] else "false")
+PY
+)"
+  [ -z "${https_value}" ] || HTTPS_ACTIVE="${https_value}"
+  ADMIN_API_BASE="$(admin_api_base_url)"
+}
+
+validate_admin_username() {
+  local name="$1"
+  [ -n "${name}" ] || die "账号不能为空"
+  case "${name}" in
+    *[!A-Za-z0-9_.-]*) die "账号只能包含字母、数字、下划线、短横线和点：${name}" ;;
+  esac
+  if [ "${#name}" -lt 3 ] || [ "${#name}" -gt 32 ]; then
+    die "账号长度必须是 3-32 个字符：${name}"
+  fi
+}
+
+# 与服务端 policy 对齐（8-128 个字符）。常见弱口令黑名单交给服务端返回，
+# 避免同一条清单在脚本和 Rust 里各存一份、各自漂移。
+validate_admin_password() {
+  local password="$1" label="${2:-密码}"
+  case "${password}" in
+    *$'\n'*|*$'\r'*) die "${label}不能包含换行符" ;;
+  esac
+  if [ "${#password}" -lt 8 ] || [ "${#password}" -gt 128 ]; then
+    die "${label}长度必须是 8-128 个字符"
+  fi
+}
+
+# 读取 admin.json 的账号清单，每行输出 "id<TAB>用户名<TAB>角色"。
+admin_account_list() {
+  python3 - "${STATE_DIR}/admin.json" <<'PY'
+import json
+import os
+import sys
+
+path = sys.argv[1]
+if os.path.islink(path) or not os.path.isfile(path):
+    raise SystemExit(f"后台状态文件不存在：{path}")
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"后台状态文件无法解析：{exc}")
+accounts = data.get("accounts")
+if accounts is None:
+    accounts = []
+if not isinstance(accounts, list):
+    raise SystemExit("后台状态文件的 accounts 字段不是数组")
+for account in accounts:
+    if not isinstance(account, dict):
+        continue
+    account_id = account.get("id")
+    username = account.get("username")
+    role = account.get("role")
+    if not isinstance(account_id, str) or not isinstance(username, str):
+        continue
+    print("\t".join((account_id, username, role if isinstance(role, str) else "unknown")))
+PY
+}
+
+admin_role_label() {
+  case "$1" in
+    owner) printf 'Owner（所有者）' ;;
+    admin) printf 'Admin（管理员）' ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# 调用后台 HTTP 接口：$1=方法 $2=路径 $3=Bearer 令牌（可空）$4=JSON 请求体（可空）。
+# 成功时把响应体写到 stdout；失败时退出码 3=认证被拒 / 4=其它 HTTP 错误 / 5=连不上。
+# 令牌与请求体只经文件描述符传递，不进 argv，避免在 ps 里暴露。
+admin_api_call() {
+  local method="$1" path="$2" token="$3" body="$4"
+  python3 - "${ADMIN_API_BASE}" "${method}" "${path}" 3<<<"${token}" 4<<<"${body}" <<'PY'
+import json
+import ssl
+import sys
+import urllib.error
+import urllib.request
+
+base, method, path = sys.argv[1:4]
+with open(3, "r", encoding="utf-8", closefd=False) as token_fd:
+    token = token_fd.read().strip()
+with open(4, "r", encoding="utf-8", closefd=False) as body_fd:
+    body = body_fd.read().strip()
+
+headers = {"Accept": "application/json"}
+data = None
+if body:
+    data = body.encode("utf-8")
+    headers["Content-Type"] = "application/json"
+if token:
+    headers["Authorization"] = f"Bearer {token}"
+
+handlers = [urllib.request.ProxyHandler({})]
+if base.startswith("https://"):
+    # 自签证书是官方支持的部署方式；这里只连回环地址，不做证书校验。
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    handlers.append(urllib.request.HTTPSHandler(context=context))
+opener = urllib.request.build_opener(*handlers)
+request = urllib.request.Request(f"{base}{path}", data=data, method=method, headers=headers)
+try:
+    with opener.open(request, timeout=15) as response:
+        sys.stdout.write(response.read().decode("utf-8", "replace"))
+except urllib.error.HTTPError as exc:
+    payload = exc.read().decode("utf-8", "replace")
+    detail = ""
+    try:
+        parsed = json.loads(payload)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        for key in ("detail", "title"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                detail = value.strip()
+                break
+    if not detail:
+        detail = payload.strip()[:200]
+    print(f"HTTP {exc.code}" + (f"：{detail}" if detail else ""), file=sys.stderr)
+    raise SystemExit(3 if exc.code in (401, 403) else 4)
+except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    print(f"无法连接后台接口：{exc}", file=sys.stderr)
+    raise SystemExit(5)
+PY
+}
+
+admin_json_login_body() {
+  local username="$1" password="$2"
+  python3 - "${username}" 3<<<"${password}" <<'PY'
+import json
+import sys
+
+with open(3, "r", encoding="utf-8", closefd=False) as fh:
+    password = fh.read().rstrip("\n")
+sys.stdout.write(json.dumps({"username": sys.argv[1], "password": password}))
+PY
+}
+
+admin_json_password_body() {
+  local password="$1"
+  python3 - 3<<<"${password}" <<'PY'
+import json
+import sys
+
+with open(3, "r", encoding="utf-8", closefd=False) as fh:
+    password = fh.read().rstrip("\n")
+sys.stdout.write(json.dumps({"password": password}))
+PY
+}
+
+admin_json_create_body() {
+  local username="$1" password="$2"
+  python3 - "${username}" 3<<<"${password}" <<'PY'
+import json
+import sys
+
+with open(3, "r", encoding="utf-8", closefd=False) as fh:
+    password = fh.read().rstrip("\n")
+sys.stdout.write(json.dumps({"username": sys.argv[1], "password": password, "role": "owner"}))
+PY
+}
+
+# 登录并输出 "会话令牌<TAB>账号id<TAB>用户名<TAB>角色"。失败即 die。
+admin_api_login() {
+  local username="$1" password="$2" body="" response="" status=0 parsed=""
+  local session="" account_id="" account_user="" account_role=""
+  body="$(admin_json_login_body "${username}" "${password}")" || die "无法构造登录请求"
+  response="$(admin_api_call POST /api/v1/admin/login "" "${body}")" || status=$?
+  case "${status}" in
+    0) ;;
+    3) die "登录被拒绝：账号或密码不正确" ;;
+    5) die "无法连接后台接口 ${ADMIN_API_BASE}；请确认 ${SERVICE_NAME}.service 正在运行" ;;
+    *) die "后台接口调用失败（退出码 ${status}）" ;;
+  esac
+  parsed="$(python3 - 3<<<"${response}" <<'PY'
+import json
+import sys
+
+with open(3, "r", encoding="utf-8", closefd=False) as fh:
+    payload = fh.read()
+try:
+    data = json.loads(payload)
+except ValueError:
+    raise SystemExit("后台登录响应不是合法 JSON")
+token = data.get("token")
+account = data.get("account")
+if not isinstance(token, str) or not token.strip():
+    raise SystemExit("后台登录响应缺少会话令牌")
+if not isinstance(account, dict):
+    account = {}
+print("\t".join((
+    token.strip(),
+    str(account.get("id", "")),
+    str(account.get("username", "")),
+    str(account.get("role", "")),
+)))
+PY
+)" || die "无法解析后台登录响应"
+  IFS=$'\t' read -r session account_id account_user account_role <<< "${parsed}"
+  [ -n "${session}" ] || die "后台登录响应缺少会话令牌"
+  printf '%s\t%s\t%s\t%s' "${session}" "${account_id}" "${account_user}" "${account_role}"
+}
+
+# 清空 accounts，并移除 setup / legacy_admin 令牌，让 daemon 下次启动重新武装
+# 一次性 bootstrap 令牌。写回沿用 daemon 自己的属主与 0600 权限。
+admin_clear_accounts() {
+  run_as_service_user python3 - "${STATE_DIR}/admin.json" <<'PY'
+import json
+import os
+import sys
+import tempfile
+
+path = sys.argv[1]
+if not os.path.lexists(path):
+    # 没有状态文件时无需清空：daemon 下次启动本来就会重新武装一次性 bootstrap 令牌。
+    print("removed_accounts=0 removed_tokens=0")
+    raise SystemExit(0)
+try:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, ValueError) as exc:
+    raise SystemExit(f"后台状态文件无法解析：{exc}")
+if not isinstance(data, dict):
+    raise SystemExit("后台状态文件根节点不是对象")
+accounts = data.get("accounts")
+if accounts is None:
+    accounts = []
+if not isinstance(accounts, list):
+    raise SystemExit("后台状态文件的 accounts 字段不是数组")
+removed_accounts = len(accounts)
+data["accounts"] = []
+removed_tokens = 0
+tokens = data.get("tokens")
+if isinstance(tokens, list):
+    kept = []
+    for token in tokens:
+        if isinstance(token, dict) and token.get("kind") in ("setup", "legacy_admin"):
+            removed_tokens += 1
+            continue
+        kept.append(token)
+    data["tokens"] = kept
+directory = os.path.dirname(os.path.abspath(path))
+fd, tmp = tempfile.mkstemp(prefix=".admin.json.reset.", dir=directory)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+print(f"removed_accounts={removed_accounts} removed_tokens={removed_tokens}")
+PY
+}
+
+# 修改现有账号的密码（需要当前密码）。非交互模式读 HASHCAKE_ADMIN_* 环境变量。
+admin_change_password() {
+  local accounts_text="" target_id="" target_user="" target_role="" login_user="" login_input=""
+  local current_password="" new_password="" confirm_password="" body="" status=0 login_result=""
+  local session="" login_id="" login_role="" choice="" index=0
+  local account_id="" account_user="" account_role=""
+  local -a account_ids=() account_users=() account_roles=()
+
+  systemctl is-active --quiet "${SERVICE_NAME}.service" \
+    || die "${SERVICE_NAME}.service 未运行；请先执行 $0 start（忘记密码请选择「重置后台账号」）"
+  accounts_text="$(admin_account_list)" || die "无法读取后台账号清单"
+  [ -n "${accounts_text}" ] || die "后台还没有账号；请先用首次 Web访问令牌在网页激活，或选择「重置后台账号」"
+  while IFS=$'\t' read -r account_id account_user account_role; do
+    [ -n "${account_id:-}" ] || continue
+    account_ids+=("${account_id}")
+    account_users+=("${account_user}")
+    account_roles+=("${account_role:-unknown}")
+  done <<< "${accounts_text}"
+
+  if [ -n "${HASHCAKE_ADMIN_USER:-}" ]; then
+    target_user="${HASHCAKE_ADMIN_USER}"
+  elif [ "${#account_ids[@]}" -eq 1 ]; then
+    target_user="${account_users[0]}"
+  elif [ -t 0 ]; then
+    printf '\n现有后台账号：\n'
+    for index in "${!account_ids[@]}"; do
+      printf '  %d) %s（%s）\n' "$((index + 1))" "${account_users[index]}" "$(admin_role_label "${account_roles[index]}")"
+    done
+    read -r -p "要修改哪个账号的密码 [1-${#account_ids[@]}]（默认 1）: " choice
+    choice="${choice:-1}"
+    case "${choice}" in
+      *[!0-9]*) die "请输入账号序号：${choice}" ;;
+    esac
+    [ "${choice}" -ge 1 ] && [ "${choice}" -le "${#account_ids[@]}" ] || die "账号序号超出范围：${choice}"
+    target_user="${account_users[$((choice - 1))]}"
+  else
+    die "存在多个后台账号；非交互模式请用 HASHCAKE_ADMIN_USER 指定要修改的账号"
+  fi
+  for index in "${!account_users[@]}"; do
+    if [ "${account_users[index]}" = "${target_user}" ]; then
+      target_id="${account_ids[index]}"
+      target_role="${account_roles[index]}"
+      break
+    fi
+  done
+  [ -n "${target_id}" ] || die "后台账号不存在：${target_user}"
+
+  login_user="${HASHCAKE_ADMIN_LOGIN_USER:-${target_user}}"
+  if [ -t 0 ]; then
+    read -r -p "用于验证身份的账号 [${login_user}]: " login_input
+    [ -z "${login_input}" ] || login_user="${login_input}"
+    read -r -s -p "当前密码: " current_password
+    printf '\n'
+    read -r -s -p "新密码（8-128 个字符）: " new_password
+    printf '\n'
+    read -r -s -p "再次输入新密码: " confirm_password
+    printf '\n'
+  else
+    current_password="${HASHCAKE_ADMIN_CURRENT_PASSWORD:-}"
+    new_password="${HASHCAKE_ADMIN_NEW_PASSWORD:-}"
+    confirm_password="${new_password}"
+  fi
+  [ -n "${current_password}" ] || die "当前密码不能为空"
+  [ -n "${new_password}" ] || die "新密码不能为空"
+  validate_admin_password "${new_password}" "新密码"
+  [ "${new_password}" = "${confirm_password}" ] || die "两次输入的新密码不一致"
+  [ "${new_password}" != "${current_password}" ] || die "新密码不能与当前密码相同"
+
+  log "校验 ${login_user} 的身份"
+  login_result="$(admin_api_login "${login_user}" "${current_password}")"
+  IFS=$'\t' read -r session login_id login_role _ <<< "${login_result}"
+  if [ "${login_id}" != "${target_id}" ] && [ "${login_role}" != "owner" ]; then
+    die "账号 ${login_user} 不是 Owner，只能修改自己的密码"
+  fi
+
+  body="$(admin_json_password_body "${new_password}")" || die "无法构造改密请求"
+  status=0
+  admin_api_call PATCH "/api/v1/admin/accounts/${target_id}" "${session}" "${body}" >/dev/null || status=$?
+  case "${status}" in
+    0) ;;
+    3) die "改密被拒绝：当前账号没有权限，或会话已失效" ;;
+    5) die "无法连接后台接口 ${ADMIN_API_BASE}" ;;
+    *) die "改密失败（退出码 ${status}）" ;;
+  esac
+  admin_api_login "${target_user}" "${new_password}" >/dev/null
+  ok "已修改后台账号 ${target_user}（${target_role:-unknown}）的密码；该账号的其它登录会话已被吊销"
+}
+
+# 重置失败时把备份还原回去并重新拉起服务。回滚本身失败只警告，不掩盖原始错误。
+admin_restore_admin_store() {
+  local backup_path="$1"
+  [ -n "${backup_path}" ] || return 0
+  # 先停服务再还原：运行中的 daemon 仍持有「账号已清空」的内存状态，之后任何一次会话写入
+  # 都可能把刚还原的文件覆盖掉。停掉 → 还原 → 拉起，落盘的一定是备份内容。
+  systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
+  cp -a -- "${backup_path}" "${STATE_DIR}/admin.json" \
+    || warn "回滚 ${STATE_DIR}/admin.json 失败，请手工恢复备份 ${backup_path}"
+  restart_service_checked \
+    || warn "回滚后 ${SERVICE_NAME}.service 未能重新启动，请手工检查"
+}
+
+# 忘记密码时的恢复路径：清空后台账号表 → 重启 → 用 daemon 重新打印的一次性
+# bootstrap 令牌重建首个 Owner。会删除现有账号（含其它账号），因此先备份、失败即回滚。
+admin_reset_password() {
+  local accounts_text="" confirm="" backup_path="" start_line=1 token="" body="" status=0
+  local username="" password="" confirm_password="" index=0
+  local account_id="" account_user="" account_role=""
+  local -a account_users=() account_roles=()
+
+  has_systemd || die "当前系统没有可用 systemd"
+  accounts_text="$(admin_account_list 2>/dev/null || true)"
+  printf '\n即将重建后台管理员账号。\n'
+  if [ -n "${accounts_text}" ]; then
+    while IFS=$'\t' read -r account_id account_user account_role; do
+      [ -n "${account_id:-}" ] || continue
+      account_users+=("${account_user}")
+      account_roles+=("${account_role:-unknown}")
+    done <<< "${accounts_text}"
+    printf '现有账号（重建后都会消失）：\n'
+    for index in "${!account_users[@]}"; do
+      printf '  - %s（%s）\n' "${account_users[index]}" "$(admin_role_label "${account_roles[index]}")"
+    done
+  else
+    printf '当前没有可用的后台账号。\n'
+  fi
+  warn "重建后只有新账号能登录，原账号、原密码与旧会话全部失效"
+  if [ -t 0 ]; then
+    read -r -p "输入 RESET 确认重建: " confirm
+  else
+    confirm="${HASHCAKE_ADMIN_RESET_CONFIRM:-}"
+  fi
+  [ "${confirm}" = "RESET" ] || die "已取消（需要输入 RESET）"
+
+  if [ -t 0 ]; then
+    read -r -p "新账号 [admin]: " username
+    username="${username:-admin}"
+    read -r -s -p "新密码（8-128 个字符）: " password
+    printf '\n'
+    read -r -s -p "再次输入新密码: " confirm_password
+    printf '\n'
+  else
+    username="${HASHCAKE_ADMIN_USER:-admin}"
+    password="${HASHCAKE_ADMIN_NEW_PASSWORD:-}"
+    confirm_password="${password}"
+  fi
+  validate_admin_username "${username}"
+  validate_admin_password "${password}" "新密码"
+  [ "${password}" = "${confirm_password}" ] || die "两次输入的新密码不一致"
+
+  prepare_installed_service
+  ensure_installer_state_dir
+  # 备份放在停服务之前：拷贝失败时服务仍在运行，不会把矿场留在一个「已停且没改成」的状态。
+  backup_path=""
+  if [ -e "${STATE_DIR}/admin.json" ] || [ -L "${STATE_DIR}/admin.json" ]; then
+    backup_path="${INSTALLER_STATE_DIR}/admin.json.reset.$(date +%Y%m%d%H%M%S)"
+    cp -a -- "${STATE_DIR}/admin.json" "${backup_path}" || die "备份 ${STATE_DIR}/admin.json 失败，未做任何修改"
+    chmod 600 -- "${backup_path}"
+    log "已备份后台状态到 ${backup_path}"
+  fi
+  stop_service
+  if ! admin_clear_accounts >/dev/null; then
+    warn "清空后台账号失败，正在回滚"
+    admin_restore_admin_store "${backup_path}"
+    die "清空后台账号失败，已回滚到原状态"
+  fi
+  if [ -f "${LOG_DIR}/hashcake.err.log" ]; then
+    start_line=$(( $(wc -l < "${LOG_DIR}/hashcake.err.log") + 1 ))
+  fi
+  if ! restart_service_checked; then
+    show_service_start_failure
+    admin_restore_admin_store "${backup_path}"
+    die "${SERVICE_NAME}.service 重建后启动失败，已回滚到原状态"
+  fi
+  token="$(wait_for_bootstrap_token "${start_line}" || true)"
+  if [ -z "${token}" ]; then
+    admin_restore_admin_store "${backup_path}"
+    die "未能从启动日志提取新的首次 Web访问令牌，已回滚到原状态"
+  fi
+  body="$(admin_json_create_body "${username}" "${password}")" || die "无法构造建号请求"
+  status=0
+  admin_api_call POST /api/v1/admin/accounts "${token}" "${body}" >/dev/null || status=$?
+  case "${status}" in
+    0) ;;
+    3)
+      admin_restore_admin_store "${backup_path}"
+      die "首次 Web访问令牌被拒绝（可能已过期）；已回滚到原状态，请重试"
+      ;;
+    *)
+      admin_restore_admin_store "${backup_path}"
+      die "创建后台账号失败（退出码 ${status}）；已回滚到原状态"
+      ;;
+  esac
+  admin_api_login "${username}" "${password}" >/dev/null
+  ok "已重建后台账号 ${username}（Owner）"
+  printf '\n后台访问地址: %s\n' "$(admin_url)"
+  if [ -n "${backup_path}" ]; then
+    printf '后台状态备份: %s\n' "${backup_path}"
+    printf '提示: 确认新账号可以登录后，可自行删除该备份文件\n'
+  fi
+}
+
+# 菜单 15 / CLI admin-password 的统一入口。
+admin_password() {
+  preflight_install_or_update
+  is_complete_install || die "HashCake 安装不完整，请先执行 install 修复或 update 更新"
+  load_admin_api_settings
+  if [ "${HASHCAKE_ADMIN_RESET:-}" = "1" ]; then
+    admin_reset_password
+    return 0
+  fi
+  local mode="1"
+  if [ -t 0 ]; then
+    cat <<'EOF'
+
+1. 修改账号密码（需要当前密码）
+2. 重置后台账号（忘记密码；删除现有账号并重建 Owner）
+0. 返回
+EOF
+    read -r -p "请选择 [0-2]: " mode
+  fi
+  case "${mode}" in
+    1) admin_change_password ;;
+    2) admin_reset_password ;;
+    0|"") return 0 ;;
+    *) die "无效选择" ;;
+  esac
+}
 menu() {
   clear || true
   cat <<EOF
@@ -2908,15 +3449,16 @@ menu() {
 12. 编辑配置
 13. 查看路径和访问地址
 14. 修改 Web 访问设置
-15. 签发隧道加密令牌
-16. 查看隧道加密令牌列表
-17. 撤销隧道加密令牌
-18. 关闭并禁用整机防火墙
-19. 解除系统连接数限制
-20. 卸载
+15. 修改后台账号密码
+16. 签发隧道加密令牌
+17. 查看隧道加密令牌列表
+18. 撤销隧道加密令牌
+19. 关闭并禁用整机防火墙
+20. 解除系统连接数限制
+21. 卸载
 0. 退出
 EOF
-  read -r -p "请选择 [0-20]: " choice
+  read -r -p "请选择 [0-21]: " choice
   case "${choice}" in
     1) install_service ;;
     2) update_service ;;
@@ -2932,12 +3474,13 @@ EOF
     12) edit_config ;;
     13) show_paths ;;
     14) change_web_settings ;;
-    15) token_issue ;;
-    16) token_list ;;
-    17) token_revoke ;;
-    18) disable_firewall ;;
-    19) change_limit ;;
-    20) uninstall ;;
+    15) admin_password ;;
+    16) token_issue ;;
+    17) token_list ;;
+    18) token_revoke ;;
+    19) disable_firewall ;;
+    20) change_limit ;;
+    21) uninstall ;;
     0) exit 0 ;;
     *) die "无效选择" ;;
   esac
@@ -2973,6 +3516,8 @@ case "${cmd}" in
   edit-config) edit_config ;;
   paths|show-url) show_paths ;;
   web-settings|configure-web) change_web_settings ;;
+  admin-password|set-password) admin_password ;;
+  admin-reset|reset-password) HASHCAKE_ADMIN_RESET=1 admin_password ;;
   disable-firewall) disable_firewall ;;
   limit) change_limit ;;
   token-issue|token-create) shift; token_issue "$@" ;;
