@@ -10,6 +10,10 @@ RELEASE_BRANCH="${HASHCAKE_RELEASE_BRANCH:-main}"
 RELEASE_PLATFORM="${HASHCAKE_RELEASE_PLATFORM:-linux-amd64}"
 RELEASE_SUMS_PATH="${EDITION_PATH}/SHA256SUMS"
 RELEASE_MIRROR_BASE="${HASHCAKE_RELEASE_MIRROR_BASE-https://cdn.jsdmirror.com/gh/${RELEASE_REPO}@${RELEASE_BRANCH}}"
+# 国内入口使用的不可变提交号（发行时与 prepare-releases.sh / check-release-readiness.sh 的
+# DEFAULT_CDN_REF 保持一致）。分支清单存在缓存窗口，而这个提交的清单不可变，因此它同时也是
+# 没有外网时的版本兜底来源。
+INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-89999b89019e82b17d33cc9e14878610947d2946}"
 SERVICE_NAME="${HASHCAKE_SERVICE:-hashcake}"
 SERVICE_USER="${HASHCAKE_USER:-hashcake}"
 SERVICE_GROUP="${HASHCAKE_GROUP:-${SERVICE_USER}}"
@@ -1802,6 +1806,24 @@ verify_file_sha256() {
   ok "下载文件 SHA-256 校验通过"
 }
 
+# 锚点提交的清单：国内镜像按不可变提交取内容，不受分支清单缓存影响。国内服务器通常访问
+# 不到 api.github.com，这个来源是「没有外网也要拿到至少锚点当时最新版」的最后一道兜底。
+sums_lookup_mirror_anchor() {
+  local dst="$1" base
+  [ -n "${INSTALLER_ANCHOR_REF}" ] || return 1
+  [ -n "${RELEASE_MIRROR_BASE}" ] || return 1
+  case "${RELEASE_MIRROR_BASE}" in
+    *@*) ;;
+    *) return 1 ;;
+  esac
+  command -v curl >/dev/null 2>&1 || return 1
+  base="${RELEASE_MIRROR_BASE%/}"
+  base="${base%@*}"
+  curl --fail --silent --show-error --location --connect-timeout 5 --max-time 20 \
+    "${base}@${INSTALLER_ANCHOR_REF}/${RELEASE_SUMS_PATH}" -o "${dst}" 2>/dev/null || return 1
+  [ -s "${dst}" ]
+}
+
 # 国内镜像对 `@分支`（如 @main）的清单存在缓存窗口（`stale-while-revalidate` 以小时计）。
 # 清单落后时，「最新稳定版」会被静默解析成上一个版本，甚至查不到目标版本的校验值；而下载和
 # 校验都成功，所以不会触发任何回退。下面几个函数只解决这一件事：镜像清单缺失或落后时，
@@ -1867,7 +1889,7 @@ version_is_newer() {
 }
 
 repo_asset_sha256() {
-  local asset_path="$1" sums_file expected github_file
+  local asset_path="$1" sums_file expected github_file anchor_file
   sums_file="$(mktemp "${INSTALL_DIR}/.SHA256SUMS.XXXXXX")"
   if ! download_repo_file "${RELEASE_SUMS_PATH}" "${sums_file}"; then
     rm -f -- "${sums_file}"
@@ -1881,6 +1903,14 @@ repo_asset_sha256() {
       [ -z "${expected}" ] || printf '%s\n' "${yellow}注意:${reset} 国内镜像的发布清单尚未刷新，${asset_path} 的校验值取自 GitHub" >&2
     fi
     rm -f -- "${github_file}"
+    if [ -z "${expected}" ]; then
+      anchor_file="$(mktemp "${INSTALL_DIR}/.SHA256SUMS.anchor.XXXXXX")"
+      if sums_lookup_mirror_anchor "${anchor_file}"; then
+        expected="$(sums_sha256_for "${anchor_file}" "${asset_path}")"
+        [ -z "${expected}" ] || printf '%s\n' "${yellow}注意:${reset} 国内镜像的分支清单尚未刷新，${asset_path} 的校验值取自锚点提交的清单" >&2
+      fi
+      rm -f -- "${anchor_file}"
+    fi
   fi
   rm -f -- "${sums_file}"
   if [ -z "${expected}" ]; then
@@ -1890,7 +1920,7 @@ repo_asset_sha256() {
 }
 
 repo_asset_sha256_optional() {
-  local asset_path="$1" sums_file expected github_file
+  local asset_path="$1" sums_file expected github_file anchor_file
   sums_file="$(mktemp "${INSTALL_DIR}/.SHA256SUMS.XXXXXX")"
   if ! download_repo_file "${RELEASE_SUMS_PATH}" "${sums_file}"; then
     rm -f -- "${sums_file}"
@@ -1903,6 +1933,13 @@ repo_asset_sha256_optional() {
       expected="$(sums_sha256_for "${github_file}" "${asset_path}")"
     fi
     rm -f -- "${github_file}"
+    if [ -z "${expected}" ]; then
+      anchor_file="$(mktemp "${INSTALL_DIR}/.SHA256SUMS.anchor.XXXXXX")"
+      if sums_lookup_mirror_anchor "${anchor_file}"; then
+        expected="$(sums_sha256_for "${anchor_file}" "${asset_path}")"
+      fi
+      rm -f -- "${anchor_file}"
+    fi
   fi
   rm -f -- "${sums_file}"
   [ -n "${expected}" ] || return 1
@@ -1916,7 +1953,7 @@ asset_name_for_version() {
     return
   fi
   command -v curl >/dev/null 2>&1 || die "缺少 curl，无法查询 latest Release"
-  local sums_file name github_file github_name
+  local sums_file name github_file github_name anchor_file anchor_name
   sums_file="$(mktemp "${TMPDIR:-/tmp}/hashcake-SHA256SUMS.XXXXXX")"
   if ! download_repo_file "${RELEASE_SUMS_PATH}" "${sums_file}"; then
     rm -f -- "${sums_file}"
@@ -1937,6 +1974,19 @@ asset_name_for_version() {
       fi
     fi
     rm -f -- "${github_file}"
+  fi
+
+  # 国内服务器通常访问不到 api.github.com，锚点提交的不可变清单是这一侧的兜底来源。
+  if sums_mirror_may_be_stale; then
+    anchor_file="$(mktemp "${TMPDIR:-/tmp}/hashcake-Anchor-SHA256SUMS.XXXXXX")"
+    if sums_lookup_mirror_anchor "${anchor_file}"; then
+      anchor_name="$(latest_asset_from_sums "${anchor_file}" "${prefix}" || true)"
+      if [ -n "${anchor_name}" ] && version_is_newer "${anchor_name}" "${name}"; then
+        printf '%s\n' "${yellow}注意:${reset} 国内镜像的分支清单尚未刷新（镜像最新 ${name}，锚点提交清单最新 ${anchor_name}），已按锚点清单选择版本；下载仍优先使用国内镜像" >&2
+        name="${anchor_name}"
+      fi
+    fi
+    rm -f -- "${anchor_file}"
   fi
   printf '%s' "${name}"
 }
