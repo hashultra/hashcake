@@ -61,6 +61,9 @@ green=$'\033[32m'
 yellow=$'\033[33m'
 blue=$'\033[34m'
 reset=$'\033[0m'
+if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ]; then
+  red="" green="" yellow="" blue="" reset=""
+fi
 
 log() { printf '%s\n' "${blue}==>${reset} $*"; }
 ok() { printf '%s\n' "${green}完成:${reset} $*"; }
@@ -68,7 +71,7 @@ warn() { printf '%s\n' "${yellow}注意:${reset} $*"; }
 die() { printf '%s\n' "${red}错误:${reset} $*" >&2; exit 1; }
 
 need_root() {
-  [ "$(id -u)" = "0" ] || die "请使用 root 运行：sudo bash $0"
+  [ "$(id -u)" = "0" ] || die "请先执行 sudo -i 进入 root shell，再重新运行原安装命令"
 }
 
 require_bash_runtime() {
@@ -1625,6 +1628,7 @@ disable_firewall() {
   commit_firewall_change
 }
 
+
 public_ip() {
   local ip=""
   if command_exists curl; then
@@ -2616,6 +2620,13 @@ EOF
 }
 
 start_service() {
+  need_root
+  has_systemd || die "当前系统没有可用 systemd"
+  if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+    ok "${SERVICE_NAME} 已在运行，未重复启动；需要重启时请选择重启服务"
+    status_service
+    return 0
+  fi
   restart_service
 }
 
@@ -2900,6 +2911,7 @@ change_web_settings() {
 
 change_limit() {
   need_root
+  validate_runtime_inputs
   acquire_installer_lock
   has_systemd || die "当前系统没有可用 systemd"
   log "设置 Linux 文件句柄上限"
@@ -2907,10 +2919,24 @@ change_limit() {
     || printf '%s\n' "${SERVICE_USER} soft nofile 1048576" >> /etc/security/limits.conf
   grep -Fqx "${SERVICE_USER} hard nofile 1048576" /etc/security/limits.conf 2>/dev/null \
     || printf '%s\n' "${SERVICE_USER} hard nofile 1048576" >> /etc/security/limits.conf
-  grep -q 'DefaultLimitNOFILE=1048576' /etc/systemd/system.conf 2>/dev/null || echo 'DefaultLimitNOFILE=1048576' >> /etc/systemd/system.conf
-  systemctl daemon-reexec || true
-  ok "已设置 ${SERVICE_USER} 和 systemd 的文件句柄上限；服务 unit 也固定使用 1048576"
+  local dropin_dir="/etc/systemd/system.conf.d" dropin_file dropin_tmp
+  dropin_file="${dropin_dir}/90-hashcake-nofile.conf"
+  mkdir -p -- "${dropin_dir}"
+  validate_root_controlled_parent "${dropin_file}" "systemd 上限配置"
+  [ ! -L "${dropin_file}" ] && { [ ! -e "${dropin_file}" ] || [ -f "${dropin_file}" ]; } \
+    || die "systemd 上限配置不能是符号链接或非普通文件：${dropin_file}"
+  dropin_tmp="$(mktemp "${dropin_dir}/.hashcake-nofile.XXXXXX")"
+  if ! { printf '[Manager]\nDefaultLimitNOFILE=1048576\n' > "${dropin_tmp}" \
+    && chmod 0644 "${dropin_tmp}" \
+    && mv -f -- "${dropin_tmp}" "${dropin_file}"; }; then
+    rm -f -- "${dropin_tmp}"
+    die "无法写入 systemd 上限配置"
+  fi
+  systemctl daemon-reexec || die "配置已写入，但 systemd 重载失败，请检查后重试"
+  ok "已设置 ${SERVICE_USER} 和 systemd 的文件句柄上限为 1048576"
+  warn "这不是无限连接；已有进程需重启后生效。安装器不会自动重启 HashCake 或服务器。"
 }
+
 
 token_list() {
   [ -x "${BIN_PATH}" ] || die "请先安装 hashcake 二进制"
@@ -3526,7 +3552,7 @@ admin_reset_password() {
   fi
 }
 
-# 菜单 15 / CLI admin-password 的统一入口。
+# 主菜单 / CLI admin-password 的统一入口。
 admin_password() {
   preflight_install_or_update
   is_complete_install || die "HashCake 安装不完整，请先执行 install 修复或 update 更新"
@@ -3552,63 +3578,195 @@ EOF
     *) die "无效选择" ;;
   esac
 }
-menu() {
-  clear || true
+installer_usage() {
   cat <<EOF
-========== ${APP_NAME} 一键安装管理 ==========
-安装目录: ${INSTALL_DIR}
-服务名:   ${SERVICE_NAME}
+${APP_NAME} 安装与管理
 
-1. 首次安装
-2. 更新程序
-3. 启动
-4. 停止
-5. 重启
-6. 查看运行状态
-7. 查看最近日志
-8. 实时跟随日志
-9. 清空日志
-10. 设置开机启动
-11. 关闭开机启动
-12. 编辑配置
-13. 查看路径和访问地址
-14. 修改 Web 访问设置
-15. 修改后台账号密码
-16. 签发隧道加密令牌
-17. 查看隧道加密令牌列表
-18. 撤销隧道加密令牌
-19. 关闭并禁用整机防火墙
-20. 解除系统连接数限制
-21. 卸载
-0. 退出
+用法: bash install.sh [命令]
+不带命令进入管理菜单；安装/更新自动选择本发行版的最新稳定版。
+
+常用命令:
+  install / update           首次安装 / 更新（保留配置和账号）
+  install-version <版本>      安装或切换到本发行版的指定版本
+  start / restart / stop      启动 / 重启 / 停止
+  status / show-url           运行状态与访问地址
+  logs / follow-logs          最近日志 / 实时日志（Ctrl+C 结束）
+  web-settings               修改 Web 端口、访问路径与 HTTPS
+  admin-password             修改后台密码（需要当前密码）
+  admin-reset                忘记密码时重建账号（需要明确确认）
+
+维护命令:
+  enable / disable           开启 / 关闭开机启动
+  edit-config / paths        编辑配置 / 查看安装路径
+  token-issue / token-list    签发 / 列出 CakeBox 隧道令牌
+  token-revoke <site_id>      撤销指定站点的令牌
+  clear-logs                 清空日志
+  disable-firewall           关闭整机防火墙（云安全组需自行配置）
+  limit                      调整系统连接限制（文件句柄上限）
+  uninstall                  卸载（删除安装目录，需要明确确认）
+
+安装、更新和维护需要 root 权限。首次安装自动设置随机端口、安全路径和 HTTPS。
 EOF
-  read -r -p "请选择 [0-21]: " choice
-  case "${choice}" in
-    1) install_service ;;
-    2) update_service ;;
-    3) start_service ;;
-    4) stop_service ;;
-    5) restart_service ;;
-    6) status_service ;;
-    7) show_logs ;;
-    8) follow_logs ;;
-    9) clear_logs ;;
-    10) enable_service ;;
-    11) disable_service ;;
-    12) edit_config ;;
-    13) show_paths ;;
-    14) change_web_settings ;;
-    15) admin_password ;;
-    16) token_issue ;;
-    17) token_list ;;
-    18) token_revoke ;;
-    19) disable_firewall ;;
-    20) change_limit ;;
-    21) uninstall ;;
-    0) exit 0 ;;
-    *) die "无效选择" ;;
+}
+
+read_menu_choice() {
+  printf '\n请选择编号（回车或 0 返回，主菜单退出）: '
+  if ! IFS= read -r "$1"; then
+    printf '\n'
+    return 1
+  fi
+}
+
+confirm_menu_action() {
+  local answer=""
+  printf '%s [y/N]: ' "$1"
+  IFS= read -r answer || return 1
+  case "${answer}" in
+    y|Y|yes|YES) return 0 ;;
+    *) printf '已取消。\n'; return 1 ;;
   esac
 }
+
+run_menu_action() {
+  local status=0
+  # 不能放进 if / ||：那会让 Bash 忽略整个操作内部的 errexit，破坏失败回滚。
+  # 子 shell 隔离 exit、事务 trap、锁和内存状态；每次操作后重新读取安装状态。
+  trap ':' INT
+  set +e
+  (
+    set -Eeuo pipefail
+    trap - INT
+    dispatch_installer_command "$@"
+  )
+  status=$?
+  set -e
+  trap - INT
+  case "${status}" in
+    0) ;;
+    130) printf '\n已中断当前操作，返回菜单。\n' ;;
+    *) warn "操作未完成（退出码 ${status}），请查看上方提示；可修正后重试。" ;;
+  esac
+}
+
+install_selected_version() {
+  local version="${1:-}"
+  if [ -z "${version}" ]; then
+    printf '输入已发布版本号（如 0.1.6，留空取消）: '
+    IFS= read -r version || return 0
+  fi
+  [ -n "${version}" ] || { printf '已取消。\n'; return 0; }
+  [[ "${version}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] \
+    || die "请输入有效的已发布版本号，例如 0.1.6 或 v0.1.6"
+  local RELEASE_TAG="v${version#v}"
+  log "选择 ${APP_NAME} ${RELEASE_TAG}，仍使用本发行版的下载和校验流程"
+  if is_complete_install; then
+    warn "切换旧版本时可能不兼容现有配置；预检失败不会替换当前程序"
+    update_service
+  else
+    install_service
+  fi
+}
+
+menu() {
+  local choice="" action="" state="" tokens_choice=""
+  while true; do
+    state="未安装"
+    if is_complete_install; then
+      state="已安装 · 未运行"
+      if has_systemd && systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+        state="运行中"
+      fi
+    elif is_installed; then
+      state="安装不完整（可选择 1 修复）"
+    fi
+    cat <<EOF
+
+========== ${APP_NAME} 管理菜单 ==========
+状态: ${state}  |  服务: ${SERVICE_NAME}
+目录: ${INSTALL_DIR}
+
+安装与运行
+  1. 首次安装 / 修复安装
+  2. 更新程序（保留配置和账号）
+  3. 启动服务
+  4. 停止服务
+  5. 重启服务
+  6. 查看运行状态
+
+日志与开机启动
+  7. 查看最近日志（含错误日志）
+  8. 实时跟随日志（Ctrl+C 返回菜单）
+  9. 清空日志
+ 10. 设置开机启动
+ 11. 关闭开机启动
+
+后台与配置
+ 12. 编辑配置文件
+ 13. 查看后台访问地址与路径
+ 14. 修改 Web 端口 / 安全路径 / HTTPS
+ 15. 修改后台账号密码 / 忘记密码
+
+维护工具
+ 16. CakeBox 隧道令牌（签发 / 列表 / 撤销）
+ 17. 安装 / 切换指定版本
+ 18. 关闭整机防火墙
+ 19. 调整系统连接限制（文件句柄上限）
+ 20. 卸载并删除安装目录
+  0. 退出
+EOF
+    read_menu_choice choice || return 0
+    action=""
+    case "${choice}" in
+      0|q|Q|"") return 0 ;;
+      1) action="install" ;;
+      2) action="update" ;;
+      3) action="start" ;;
+      4)
+        confirm_menu_action "停止服务会中断当前矿机连接，继续吗？" || continue
+        action="stop"
+        ;;
+      5) action="restart" ;;
+      6) action="status" ;;
+      7) action="logs" ;;
+      8) action="follow-logs" ;;
+      9)
+        confirm_menu_action "清空后无法恢复现有日志，继续吗？" || continue
+        action="clear-logs"
+        ;;
+      10) action="enable" ;;
+      11) action="disable" ;;
+      12) action="edit-config" ;;
+      13) action="show-url" ;;
+      14) action="web-settings" ;;
+      15) action="admin-password" ;;
+      16)
+        printf '\n----- CakeBox 隧道令牌 -----\n'
+        printf '%s\n' '1. 签发令牌' '2. 查看令牌列表' '3. 撤销站点令牌' '0. 返回主菜单'
+        read_menu_choice tokens_choice || return 0
+        case "${tokens_choice}" in
+          1) action="token-issue" ;;
+          2) action="token-list" ;;
+          3) action="token-revoke" ;;
+          0|q|Q|"") continue ;;
+          *) warn "无效选择，请输入菜单中的编号"; continue ;;
+        esac
+        ;;
+      17) action="install-version" ;;
+      18)
+        confirm_menu_action "将关闭整机防火墙，不仅影响 HashCake；云安全组仍需自行配置。继续吗？" || continue
+        action="disable-firewall"
+        ;;
+      19)
+        confirm_menu_action "将修改服务用户和 systemd 的文件句柄上限，影响新启动的进程。继续吗？" || continue
+        action="limit"
+        ;;
+      20) action="uninstall" ;;
+      *) warn "无效选择，请输入菜单中的编号"; continue ;;
+    esac
+    run_menu_action "${action}"
+  done
+}
+
 
 resolve_installer_command() {
   if [ "$#" -eq 0 ] || [ -z "${1:-}" ]; then
@@ -3618,47 +3776,55 @@ resolve_installer_command() {
   fi
 }
 
+dispatch_installer_command() {
+  local cmd
+  cmd="$(resolve_installer_command "$@")"
+  [ "$#" -eq 0 ] || shift
+  case "${cmd}" in
+    install) install_service ;;
+    update) update_service ;;
+    install-version) install_selected_version "$@" ;;
+    start) start_service ;;
+    stop) stop_service ;;
+    restart) restart_service ;;
+    status) status_service ;;
+    logs) show_logs ;;
+    follow-logs) follow_logs ;;
+    clear-logs) clear_logs ;;
+    enable) enable_service ;;
+    disable) disable_service ;;
+    disable-firewall) disable_firewall ;;
+    limit) change_limit ;;
+    edit-config) edit_config ;;
+    paths|show-url) show_paths ;;
+    web-settings|configure-web) change_web_settings ;;
+    admin-password|set-password) admin_password ;;
+    admin-reset|reset-password) HASHCAKE_ADMIN_RESET=1 admin_password ;;
+    token-issue|token-create) token_issue "$@" ;;
+    token-list) token_list ;;
+    token-revoke) token_revoke "$@" ;;
+    write-service)
+      preflight_install_or_update
+      prepare_install_transaction_environment
+      is_installed || die "请先安装 HashCake"
+      begin_install_transaction
+      configure_web_defaults_for_update
+      ensure_metrics_token
+      install_config
+      write_service
+      commit_install_transaction
+      ;;
+    uninstall) uninstall ;;
+    menu|"") menu ;;
+    help|--help|-h) installer_usage ;;
+    *) die "未知命令：${cmd}；使用 --help 查看可用命令" ;;
+  esac
+}
+
 if [ "${HASHCAKE_INSTALLER_SOURCE_ONLY:-0}" = "1" ]; then
   # shellcheck disable=SC2317
   return 0 2>/dev/null || exit 0
 fi
 
 require_bash_runtime
-cmd="$(resolve_installer_command "$@")"
-case "${cmd}" in
-  install) install_service ;;
-  update) update_service ;;
-  start) start_service ;;
-  stop) stop_service ;;
-  restart) restart_service ;;
-  status) status_service ;;
-  logs) show_logs ;;
-  follow-logs) follow_logs ;;
-  clear-logs) clear_logs ;;
-  enable) enable_service ;;
-  disable) disable_service ;;
-  edit-config) edit_config ;;
-  paths|show-url) show_paths ;;
-  web-settings|configure-web) change_web_settings ;;
-  admin-password|set-password) admin_password ;;
-  admin-reset|reset-password) HASHCAKE_ADMIN_RESET=1 admin_password ;;
-  disable-firewall) disable_firewall ;;
-  limit) change_limit ;;
-  token-issue|token-create) shift; token_issue "$@" ;;
-  token-list) token_list ;;
-  token-revoke) shift; token_revoke "$@" ;;
-  write-service)
-    preflight_install_or_update
-    prepare_install_transaction_environment
-    is_installed || die "请先安装 HashCake"
-    begin_install_transaction
-    configure_web_defaults_for_update
-    ensure_metrics_token
-    install_config
-    write_service
-    commit_install_transaction
-    ;;
-  uninstall) uninstall ;;
-  menu|"") menu ;;
-  *) die "未知命令：${cmd}" ;;
-esac
+dispatch_installer_command "$@"
