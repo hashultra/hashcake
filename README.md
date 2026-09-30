@@ -56,7 +56,7 @@ bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@0e29f1f86c0287
 Windows amd64 版本可在 Release 页面下载：
 
 ```text
-https://github.com/hashultra/hashcake/releases/download/v0.1.6/hashcake-0.1.6-windows.exe
+https://github.com/hashultra/hashcake/releases/download/v0.1.7/hashcake-0.1.7-windows.exe
 ```
 
 ## 更新 HashCake
@@ -67,6 +67,12 @@ sudo bash install-hashcake.sh update
 
 更新会保留已有 Web 端口、安全访问路径、账号、令牌、配置和状态目录。新版本启动失败时，安装器会自动恢复旧二进制、旧服务文件和原有防火墙状态。
 
-管理菜单里的“15. 修改后台账号密码”可以在 SSH 侧改密：知道当前密码时直接修改并复验；忘记密码时在同一入口重置，脚本会先备份状态文件再重建 Owner 账号（现有后台账号会被删除）。
+管理菜单按安装与运行、日志与开机启动、后台与配置、维护工具分组，必要功能直接可见。操作结束返回菜单；回车或 0 返回上一级，主菜单中退出。
 
-已手动替换程序的离线服务器，把新版安装脚本传入后，选择菜单“5. 重启”即可。脚本会自动补齐必要启动设置并检查本地程序，不会联网下载、重新安装或重置账号。
+“15. 修改后台账号密码 / 忘记密码”可以在 SSH 侧改密：知道当前密码时直接修改并复验；忘记密码时在同一入口重置，脚本会先备份状态文件再重建 Owner 账号（现有后台账号会被删除）。
+
+已手动替换程序的离线服务器，把新版安装脚本传入后，选择菜单“5. 重启服务”即可。脚本会自动补齐必要启动设置并检查本地程序，不会联网下载、重新安装或重置账号。选择“3. 启动服务”时，已运行的服务不会被重复启动。
+
+需要切换已发布版本时，选择“17. 安装 / 切换指定版本”，仍执行下载校验与配置预检。手动防火墙及系统连接限制工具分别位于“18. 关闭整机防火墙”和“19. 调整系统连接限制”，执行前显示影响并要求确认。
+
+需要自动化时可显式使用 `bash install-hashcake.sh update` 等命令；完整命令见 `bash install-hashcake.sh --help`。
