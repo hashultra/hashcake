@@ -56,7 +56,7 @@ bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@15d98bd5824c48
 Windows amd64 版本可在 Release 页面下载：
 
 ```text
-https://github.com/hashultra/hashcake/releases/download/v0.1.7/hashcake-0.1.7-windows.exe
+https://github.com/hashultra/hashcake/releases/download/v0.1.8/hashcake-0.1.8-windows.exe
 ```
 
 ## 更新 HashCake
