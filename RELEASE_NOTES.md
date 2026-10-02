@@ -1,16 +1,25 @@
-# HashCake v0.1.7
+# HashCake v0.1.8
 
-本版本提供 HashCake 服务端 linux-amd64 发布包。
+本版本更新 HashCake 服务端 Linux AMD64。推荐使用 SRBMiner 或 WildRig 的 PRL 用户更新。
 
 ## 更新内容
 
-- 新增 PRL（Pearl，pearlhash PoUW）币种接入：可在端口上选择 PRL，矿机以明文 Stratum 接入，由 HashCake 统一中转、统计与抽水，矿机、算力、份额与拒绝率都会出现在与管理面其它币种相同的位置。该币种的协议与其它币种差异较大（授权即建连、参数为对象、不单独下发难度），HashCake 已按它的方言适配，矿机侧无需特殊设置。接入前请注意两点：一是主矿池与费用矿池**可以指向不同的矿池**，费用线路会切换成费用矿池自己下发的任务，因此费用钱包必须是费用矿池认可的地址；二是该端口使用明文 TCP，矿机地址按 `stratum+tcp://` 填写。
-- 提升 XBT（Bitcoin BLAKE2b，经 DATUM 网关接入）的健壮性：加强网关任务标识校验，对上游连接增加超时保护，并补上中继侧的算力与份额统计，网关异常时不再出现长时间挂起。
-- 安装器交互改进：菜单支持颜色输出（非交互终端与设置 `NO_COLOR` 时自动关闭）；权限提示更明确，引导先用 `sudo -i` 进入 root shell 再重跑原命令，而不是让 sudo 在管道中失败；启动服务前会检查系统是否具备 systemd；服务已在运行时不再重复启动，直接显示当前状态。
+- 新增 PearlHash 原生 PRL 中转与抽水，已验证 WildRig 0.51.3 的真实挖矿及抽水后恢复。
+- 修复 Kryptex PRL 矿工名被合并成默认 worker 的问题，保留每台设备的名称。
+- 修复 SRBMiner 大证明导致断线，以及 SSL 连接提交后长时间没有回执的问题。
+- 改善 PRL 跨池抽水、不同难度下的比例计算、长时间不刷新的任务处理和断线恢复。已验证 SRBMiner 3.7.1、3.6.9 的 Kryptex 与 K1Pool 组合。
+- 改善 XBT 异常断连、未响应份额统计和任务难度变化时的计账；关闭抽水后立即停止新的抽水分流。
+- XBT 上游地址保留 TCP/SSL 连接方式；补齐 XBT 和 PRL 币种图标。
+
+## 使用范围
+
+- PRL 主池、备用池和抽水池须使用同一种协议，标准 JSON PRL 与 PearlHash 原生任务不能混用；切换协议时需同步调整矿机。
+- SSL 必须使用矿池对应的加密端口和有效证书。Kryptex PRL 香港节点使用 8048；PearlHash 9443 当前的自签名证书不在默认信任范围内。
+- XBT 经 DATUM 网关接入，抽水地址与主地址共用同一网关连接，不支持把份额转投到另一个矿池。
 
 ## 文件
 
-- hashcake-0.1.7-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
+- hashcake-0.1.8-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
 
 Release 资产只包含二进制文件。安装脚本位于仓库根目录 `install.sh`。
 
