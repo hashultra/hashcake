@@ -1,6 +1,6 @@
 # HashCake v0.1.8
 
-本版本更新 HashCake 服务端 Linux AMD64。推荐使用 SRBMiner 或 WildRig 的 PRL 用户更新。
+本版本更新 HashCake 服务端 Linux AMD64 与 Windows AMD64。推荐使用 SRBMiner 或 WildRig 的 PRL 用户更新。
 
 ## 更新内容
 
@@ -20,6 +20,7 @@
 ## 文件
 
 - hashcake-0.1.8-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
+- hashcake-0.1.8-windows.exe：HashCake 服务端 windows-amd64 可执行文件，已内嵌 Web 管理后台。
 
 Release 资产只包含二进制文件。安装脚本位于仓库根目录 `install.sh`。
 
