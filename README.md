@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/hashultra/hashcake/main/install.sh 
 sudo bash install-hashcake.sh
 ```
 
-运行要求：Linux amd64、bash 4 或更高版本、systemd 247 或更高版本，并使用 root 权限。安装器会在修改系统前检查这些条件；二进制不兼容时会保留并显示原始错误。
+运行要求：Linux amd64、GLIBC 2.31 或更高版本、bash 4 或更高版本、systemd 240 或更高版本、Python 3，并使用 root 权限。一键脚本使用 systemd 管理启停和开机启动；240 是追加日志功能的最低要求，245 可以使用，可选加固项按当前版本启用。缺少依赖时会给出软件包安装提示；二进制不兼容时会保留原始错误。
 
 > [!IMPORTANT]
 > 首次登录令牌有效 10 分钟，只用于创建首个管理员账号；账号创建成功后立即失效，之后使用账号与密码登录。
@@ -53,11 +53,7 @@ bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@15d98bd5824c48
 
 ### Windows
 
-Windows amd64 版本可在 Release 页面下载：
-
-```text
-https://github.com/hashultra/hashcake/releases/download/v0.1.8/hashcake-0.1.8-windows.exe
-```
+Windows amd64 版本请从 [Windows 发布目录](https://github.com/hashultra/hashcake/tree/main/windows) 选择对应的可执行文件。Linux 和 Windows 的发布版本可能不同。
 
 ## 更新 HashCake
 
