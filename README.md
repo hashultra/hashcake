@@ -53,7 +53,7 @@ bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@cd13bf70adcb98
 
 ### Windows
 
-Windows amd64 版本请从 [Windows 发布目录](https://github.com/hashultra/hashcake/tree/main/windows) 选择对应的可执行文件。Linux 和 Windows 的发布版本可能不同。
+Windows amd64 版本请从 [Releases 页面](https://github.com/hashultra/hashcake/releases) 选择包含 Windows 可执行文件的版本。Linux 和 Windows 的发布版本可能不同。
 
 ## 更新 HashCake
 

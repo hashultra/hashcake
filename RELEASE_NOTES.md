@@ -15,7 +15,7 @@
 ## 文件
 
 - `hashcake-0.1.9-linux-amd64`：Linux amd64 加密压缩单文件，内嵌 Web 管理后台。
-- 本次更新 Linux 版本；Windows 文件请查看仓库的 Windows 发布目录。
+- 本次更新 Linux 版本；Windows 文件请查看 Releases 页面中包含 Windows 资产的版本。
 
 ## 安装与更新
 

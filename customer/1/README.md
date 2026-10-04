@@ -23,6 +23,4 @@ bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@cd13bf70adcb98
 
 ## Windows 下载
 
-```text
-https://github.com/hashultra/hashcake/releases/latest/download/hashcake-1-windows-amd64.exe
-```
+Windows 定制版请在 [Releases 页面](https://github.com/hashultra/hashcake/releases) 中选择对应 Edition 的资产；没有对应文件时，请勿使用官方版替代。
