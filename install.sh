@@ -12,7 +12,7 @@ RELEASE_MIRROR_BASE="${HASHCAKE_RELEASE_MIRROR_BASE-https://cdn.jsdmirror.com/gh
 # 而提交的清单不可变。它随安装器发布前进——每次改动安装器时把这里更新为上一次公开发布的
 # 锚点提交（prepare-releases.sh 的 DEFAULT_CDN_REF 用最新锚点；这里刻意落后一代，因为
 # 安装器无法在写入时知道自己将被提交到哪个 commit）。
-INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-15d98bd5824c48702ac6d08be098d4f7d413a218}"
+INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-42d1f333e8bde79bf69c00bb5deddc8467fd9caf}"
 SERVICE_NAME="${HASHCAKE_SERVICE:-hashcake}"
 SERVICE_USER="${HASHCAKE_USER:-hashcake}"
 SERVICE_GROUP="${HASHCAKE_GROUP:-${SERVICE_USER}}"
