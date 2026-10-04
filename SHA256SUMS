@@ -1,13 +1,14 @@
 ef9ffe872633fa2d68063438b66a3259b87766bce2cbc238fe463ff84acde977  README.md
 dc970afd38c2512e21e17cba0745b574e9abef078e6ada67b82b56c02872136e  RELEASE_NOTES.md
-a2a56998e34d2b4dc7f50893408774707ee8ee9be7f9bd4354959447ba8085b3  customer/1/README.md
-a398b662dd492092666c1eae6aff38ed7b060b7163611a00f42fb5cbceb13b03  customer/1/install.sh
+12c13d1f3883b4d795333c6d9bc7b8d1532c3eed8b87dff2e4a8acc462d3ca36  customer/1/README.md
+671127b3f0b99d2c51e0faa52b58c35413647ae60b46b14028fec7c868170387  customer/1/install.sh
 e7d330698ada677b8b4eeef13a17bb3ad68e674450406daaf473701a23c26f78  customer/1/linux-amd64/hashcake-0.1.0-linux-amd64
 c2594cff3b883181a121f6b591edbd004be6d36d9851b3568c31e8b0dc71f365  customer/1/linux-amd64/hashcake-0.1.1-linux-amd64
 6fe4dea5908e2e33b64c8cd9e1efd3819e8a5730c058bc8f80547ed4f6aa556d  customer/1/linux-amd64/hashcake-0.1.2-linux-amd64
 a39db43302bd03cd4888616df43e2625d72cafe89033a95522f240bc1e8005b5  customer/1/linux-amd64/hashcake-0.1.4-linux-amd64
 1436d211a7f23961f09df551853bda542065259b48d3409b2578060d431fe647  customer/1/linux-amd64/hashcake-0.1.5-linux-amd64
 94951ba3206b9d2c359446a627f92749be37710f62059907f4764f3f5ec4261a  customer/1/linux-amd64/hashcake-0.1.6-linux-amd64
+9966cd9002cdb6024dfbf94e586bde2f0eba43a2ab9ef077ce4e7692a4f7c0ac  customer/1/linux-amd64/hashcake-0.1.9-linux-amd64
 681a5884a95ab8a762c7c94f3beb7889c59ed5f023f764fd334614bb3ba30169  customer/README.md
 2a835799891593106cf6b46312711a2b7cd6218a436afbea6f52fcdb51448ef3  install.sh
 f3b9fe5489f581dabdbecc23348b63a5970f2d5a0dd17fa82b5f7be910595c95  linux-amd64/hashcake-0.1.0-linux-amd64

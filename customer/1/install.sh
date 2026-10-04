@@ -14,7 +14,7 @@ RELEASE_MIRROR_BASE="${HASHCAKE_RELEASE_MIRROR_BASE-https://cdn.jsdmirror.com/gh
 # 而提交的清单不可变。它随安装器发布前进——每次改动安装器时把这里更新为上一次公开发布的
 # 锚点提交（prepare-releases.sh 的 DEFAULT_CDN_REF 用最新锚点；这里刻意落后一代，因为
 # 安装器无法在写入时知道自己将被提交到哪个 commit）。
-INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-0e29f1f86c02872b872b55de65fa2c8a9c0e629f}"
+INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-15d98bd5824c48702ac6d08be098d4f7d413a218}"
 SERVICE_NAME="${HASHCAKE_SERVICE:-hashcake}"
 SERVICE_USER="${HASHCAKE_USER:-hashcake}"
 SERVICE_GROUP="${HASHCAKE_GROUP:-${SERVICE_USER}}"
@@ -40,7 +40,6 @@ DOWNLOAD_SHA256="${HASHCAKE_DOWNLOAD_SHA256:-}"
 MANIFEST_URL="${HASHCAKE_MANIFEST_URL:-}"
 DOWNLOAD_MANIFEST_SHA256="${HASHCAKE_MANIFEST_SHA256:-}"
 RUST_LOG_VALUE="${RUST_LOG:-hashcake=info}"
-BUILD_FEATURES="${HASHCAKE_FEATURES:-admin-spa}"
 START_AFTER_INSTALL="${HASHCAKE_START_AFTER_INSTALL:-1}"
 ALLOW_PRERELEASE="${HASHCAKE_ALLOW_PRERELEASE:-0}"
 EXPECTED_BINARY_VERSION=""
@@ -82,8 +81,36 @@ require_bash_runtime() {
 }
 
 require_command() {
-  local command_name="$1"
-  command -v "${command_name}" >/dev/null 2>&1 || die "缺少必要命令：${command_name}"
+  local command_name="$1" package hint
+  command -v "${command_name}" >/dev/null 2>&1 && return 0
+  case "${command_name}" in
+    python3|curl|bash|grep|sed|gawk) package="${command_name}" ;;
+    awk) package="gawk" ;;
+    find) package="findutils" ;;
+    groupadd|useradd) package="shadow-utils" ;;
+    runuser|flock) package="util-linux" ;;
+    getent) package="glibc-common" ;;
+    pgrep) package="procps-ng" ;;
+    systemctl) package="systemd" ;;
+    *) package="coreutils" ;;
+  esac
+  if command -v apt-get >/dev/null 2>&1; then
+    case "${command_name}" in
+      groupadd|useradd) package="passwd" ;;
+      getent) package="libc-bin" ;;
+      pgrep) package="procps" ;;
+    esac
+    hint="apt-get update && apt-get install -y ${package}"
+  elif command -v dnf >/dev/null 2>&1; then
+    hint="dnf install -y ${package}"
+  elif command -v yum >/dev/null 2>&1; then
+    hint="yum install -y ${package}"
+  else
+    hint="使用当前发行版的包管理器安装提供 ${command_name} 的软件包"
+  fi
+  die "缺少必要命令：${command_name}
+处理方法（root）：${hint}
+补齐后重新执行原命令；安装器不会自动安装系统软件包。"
 }
 
 INSTALLER_LOCK_HELD=0
@@ -129,6 +156,34 @@ validate_runtime_inputs() {
   case "${SERVICE_GROUP}" in
     ''|*[!a-z0-9_-]*|[!a-z_]*|-*) die "服务组名不安全：${SERVICE_GROUP}" ;;
   esac
+  validate_safe_absolute_path "${INSTALL_DIR}" "安装目录"
+  validate_safe_absolute_path "${CONFIG_DIR}" "配置目录"
+  validate_safe_absolute_path "${CONFIG_FILE}" "配置文件"
+  validate_safe_absolute_path "${STATE_DIR}" "状态目录"
+  validate_safe_absolute_path "${LOG_DIR}" "日志目录"
+  validate_safe_absolute_path "${BACKUP_DIR}" "备份目录"
+  validate_safe_absolute_path "${INSTALLER_STATE_DIR}" "安装元数据目录"
+  validate_safe_absolute_path "${MANIFEST_PATH}" "HashCake manifest 路径"
+}
+
+validate_service_inputs() {
+  case "${RUST_LOG_VALUE}" in
+    ''|*[!A-Za-z0-9_=,.:/-]*) die "RUST_LOG 包含 systemd Environment 不支持的字符" ;;
+  esac
+  case "${UPDATE_MANIFEST_URL}" in
+    *[[:space:]]*) die "HASHCAKE_UPDATE_MANIFEST_URL 不能包含空白字符" ;;
+  esac
+  if [ -n "${UPDATE_MANIFEST_URL}" ]; then
+    case "${UPDATE_MANIFEST_URL}" in
+      https://*) ;;
+      *) die "HASHCAKE_UPDATE_MANIFEST_URL 必须使用 https://" ;;
+    esac
+    printf '%s' "${UPDATE_MANIFEST_URL}" | grep -Eq '^https://[A-Za-z0-9:/?&=._%+#~-]+$' \
+      || die "HASHCAKE_UPDATE_MANIFEST_URL 包含不安全字符"
+  fi
+}
+
+validate_install_inputs() {
   printf '%s' "${RELEASE_REPO}" | grep -Eq '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' \
     || die "发布仓库必须是安全的 owner/repo 格式：${RELEASE_REPO}"
   case "${RELEASE_BRANCH}" in
@@ -157,20 +212,6 @@ validate_runtime_inputs() {
     0|1) ;;
     *) die "HASHCAKE_ALLOW_PRERELEASE 只能是 0 或 1：${ALLOW_PRERELEASE}" ;;
   esac
-  case "${RUST_LOG_VALUE}" in
-    ''|*[!A-Za-z0-9_=,.:/-]*) die "RUST_LOG 包含 systemd Environment 不支持的字符" ;;
-  esac
-  case "${UPDATE_MANIFEST_URL}" in
-    *[[:space:]]*) die "HASHCAKE_UPDATE_MANIFEST_URL 不能包含空白字符" ;;
-  esac
-  if [ -n "${UPDATE_MANIFEST_URL}" ]; then
-    case "${UPDATE_MANIFEST_URL}" in
-      https://*) ;;
-      *) die "HASHCAKE_UPDATE_MANIFEST_URL 必须使用 https://" ;;
-    esac
-    printf '%s' "${UPDATE_MANIFEST_URL}" | grep -Eq '^https://[A-Za-z0-9:/?&=._%+#~-]+$' \
-      || die "HASHCAKE_UPDATE_MANIFEST_URL 包含不安全字符"
-  fi
   if [ -n "${HASHCAKE_DOWNLOAD_URL:-}" ]; then
     case "${HASHCAKE_DOWNLOAD_URL}" in
       https://*) ;;
@@ -192,36 +233,53 @@ validate_runtime_inputs() {
     && { [ "${#DOWNLOAD_MANIFEST_SHA256}" -ne 64 ] || [[ "${DOWNLOAD_MANIFEST_SHA256}" == *[!0-9A-Fa-f]* ]]; }; then
     die "HASHCAKE_MANIFEST_SHA256 必须是 64 位十六进制 SHA-256"
   fi
-
-  validate_safe_absolute_path "${INSTALL_DIR}" "安装目录"
-  validate_safe_absolute_path "${CONFIG_DIR}" "配置目录"
-  validate_safe_absolute_path "${CONFIG_FILE}" "配置文件"
-  validate_safe_absolute_path "${STATE_DIR}" "状态目录"
-  validate_safe_absolute_path "${LOG_DIR}" "日志目录"
-  validate_safe_absolute_path "${BACKUP_DIR}" "备份目录"
-  validate_safe_absolute_path "${INSTALLER_STATE_DIR}" "安装元数据目录"
-  validate_safe_absolute_path "${MANIFEST_PATH}" "HashCake manifest 路径"
 }
 
-preflight_install_or_update() {
+preflight_local_management() {
   require_bash_runtime
   need_root
-  [ "$(uname -s)" = "Linux" ] || die "一键安装器只支持 Linux，当前系统是 $(uname -s)"
+  [ "$(uname -s)" = "Linux" ] || die "一键管理脚本只支持 Linux，当前系统是 $(uname -s)"
   reject_space_path
   validate_runtime_inputs
   local command_name
-  for command_name in awk chmod chown cp dirname getent grep groupadd install mktemp mv od pgrep python3 rm runuser sed sleep sort stat systemctl tail tr useradd wc; do
+  for command_name in awk dirname grep python3 sed stat systemctl tail; do
     require_command "${command_name}"
   done
+  has_systemd || die "当前没有运行中的 systemd。此脚本通过 systemd 管理启停和开机启动；请在以 systemd 启动的 Linux 主机执行，不要在未启动 systemd 的容器中使用。"
+  acquire_installer_lock
+}
+
+preflight_service_environment() {
+  preflight_local_management
+  validate_service_inputs
+  local command_name
+  for command_name in chmod chown cp getent install mkdir mktemp mv od pgrep rm runuser sleep timeout tr wc; do
+    require_command "${command_name}"
+  done
+}
+
+require_release_platform() {
+  local platform
+  platform="$(uname -s):$(uname -m)"
+  case "${platform}:${RELEASE_PLATFORM}" in
+    Linux:x86_64:linux-amd64|Linux:amd64:linux-amd64) ;;
+    *) die "当前平台 ${platform}，请求发布平台 ${RELEASE_PLATFORM}；${APP_NAME} 当前的自动下载仅提供 Linux amd64。
+请使用 x86_64/amd64 Linux 主机；如果已有经过验证的本机平台二进制，可显式设置 HASHCAKE_BIN_SOURCE。安装编译工具不能解决缺少对应发布包的问题。" ;;
+  esac
+}
+
+preflight_install_or_update() {
+  preflight_service_environment
+  validate_install_inputs
+  require_service_systemd
   if [ -z "${HASHCAKE_BIN_SOURCE:-}" ]; then
+    [ -n "${HASHCAKE_DOWNLOAD_URL:-}" ] || require_release_platform
     require_command curl
+    require_command sort
     if ! command_exists sha256sum && ! command_exists shasum; then
-      die "缺少 sha256sum 或 shasum，无法校验下载文件"
+      require_command sha256sum
     fi
   fi
-  has_systemd || die "当前系统没有可用 systemd，无法安全安装 HashCake 服务"
-  require_hardened_systemd
-  acquire_installer_lock
 }
 
 reject_space_path() {
@@ -234,21 +292,55 @@ has_systemd() {
   command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
 }
 
-require_hardened_systemd() {
+service_systemd_version() {
   local version
   version="$(systemctl --version 2>/dev/null | awk 'NR == 1 { print $2 }')"
   case "${version}" in
-    ''|*[!0-9]*) die "无法识别 systemd 版本，不能确认 ProtectProc 安全能力" ;;
+    ''|*[!0-9]*) die "无法识别 systemd 版本；请运行 systemctl --version 检查服务管理器是否正常" ;;
   esac
-  [ "${version}" -ge 247 ] || die "systemd ${version} 过旧；HashCake 安全服务要求 systemd >= 247"
+  printf '%s' "${version}"
+}
+
+require_service_systemd() {
+  local version
+  version="$(service_systemd_version)"
+  [ "${version}" -ge 240 ] || die "systemd ${version} 不支持本安装器所需的 append: 日志输出（240 起提供），无法可靠提取首次登录令牌。
+这不是 HashCake 程序本体的版本要求。请使用 systemd >= 240 的发行版（例如 Ubuntu 20.04/22.04/24.04），不要单独强换系统核心组件；现有服务和配置未修改。"
+}
+
+optional_systemd_hardening() {
+  local version
+  version="$(service_systemd_version)"
+  if [ "${version}" -ge 242 ]; then
+    printf '%s\n' 'ProtectHostname=true' 'RestrictSUIDSGID=true'
+  else
+    warn "systemd ${version}：未启用可选主机名与 SUID/SGID 隔离（需要 242）" >&2
+  fi
+  if [ "${version}" -ge 244 ]; then
+    printf '%s\n' 'ProtectKernelLogs=true'
+  else
+    warn "systemd ${version}：未启用可选内核日志隔离（需要 244）" >&2
+  fi
+  if [ "${version}" -ge 245 ]; then
+    printf '%s\n' 'ProtectClock=true'
+  else
+    warn "systemd ${version}：未启用可选系统时钟隔离（需要 245）" >&2
+  fi
+  if [ "${version}" -ge 247 ]; then
+    printf '%s\n' 'ProtectProc=invisible'
+  else
+    warn "systemd ${version}：未启用可选 /proc 进程可见性隔离（ProtectProc 需要 247）；仍保留独立服务用户、权限限制和其它支持的加固项" >&2
+  fi
 }
 
 ensure_service_user() {
   need_root
   if ! getent group "${SERVICE_GROUP}" >/dev/null 2>&1; then
+    require_command groupadd
     groupadd --system "${SERVICE_GROUP}"
   fi
   if ! id -u "${SERVICE_USER}" >/dev/null 2>&1; then
+    require_command useradd
     useradd --system --gid "${SERVICE_GROUP}" --home-dir "${INSTALL_DIR}" --shell /usr/sbin/nologin "${SERVICE_USER}"
   fi
 }
@@ -397,7 +489,7 @@ validate_port_value() {
 
 validate_admin_bind_for_install() {
   local port
-  validate_saved_admin_bind "${ADMIN_BIND}"
+  validate_active_admin_bind "${ADMIN_BIND}"
   port="$(bind_port "${ADMIN_BIND}")"
   validate_port_value "${port}"
   if port_in_use "${port}"; then
@@ -469,17 +561,32 @@ validate_saved_admin_bind() {
   port="$(bind_port "${value}")"
   validate_port_value "${port}"
   [ -n "${host}" ] || die "安装元数据中的管理后台监听主机为空"
-  python3 - "${host}" <<'PY' || die "管理后台监听主机必须是 IPv4 或 IPv6 地址：${value}"
+  require_command python3
+  local status=0
+  python3 - "${host}" <<'PY' || status=$?
 import ipaddress
 import sys
 
 try:
     ipaddress.ip_address(sys.argv[1])
 except ValueError:
-    raise SystemExit(1)
+    raise SystemExit(2)
 PY
+  case "${status}" in
+    0) ;;
+    2) die "管理后台监听主机必须是 IPv4 或 IPv6 地址：${value}" ;;
+    *) die "Python 地址校验执行失败（退出码 ${status}），并非已确认地址非法。请检查上方 Python 错误并运行 python3 -c 'import ipaddress' 验证解释器" ;;
+  esac
+}
+
+validate_active_admin_bind() {
+  local value="$1" host
+  validate_saved_admin_bind "${value}"
+  [ -n "${value}" ] || return 0
+  host="$(host_from_bind "${value}")"
   case "${host}" in
-    *:*) ipv6_stack_available || die "系统未启用 IPv6，不能监听 ${value}" ;;
+    *:*) ipv6_stack_available || die "系统未启用 IPv6，不能使用 ${value}。
+请恢复系统 IPv6，或设置 HASHCAKE_ADMIN_BIND=0.0.0.0:$(bind_port "${value}") 后执行 web-settings 改为 IPv4；查看旧配置不受影响。" ;;
   esac
 }
 
@@ -614,6 +721,7 @@ load_install_env() {
   ADMIN_BIND="${HASHCAKE_ADMIN_BIND:-${ADMIN_BIND:-${SAVED_ADMIN_BIND:-}}}"
   URL_PREFIX="${HASHCAKE_URL_PREFIX:-${URL_PREFIX:-${SAVED_URL_PREFIX:-}}}"
   HTTPS_ACTIVE="${HASHCAKE_HTTPS_ACTIVE:-${HTTPS_ACTIVE:-${SAVED_HTTPS_ACTIVE:-}}}"
+  validate_saved_admin_bind "${ADMIN_BIND}"
 }
 
 save_install_env() {
@@ -1752,34 +1860,36 @@ PY
 }
 
 download_repo_file() {
-  local path="$1"
-  local dst="$2"
-  local args=(--fail --silent --show-error --location --retry 3 --retry-delay 1 --connect-timeout 10 --max-time 600)
-  local url part="${dst}.repo-download.$$"
-  rm -f -- "${part}"
-  if [ -z "${GITHUB_TOKEN:-}" ] && [ -z "${GH_TOKEN:-}" ] && [ -n "${RELEASE_MIRROR_BASE}" ]; then
-    url="${RELEASE_MIRROR_BASE%/}/${path}"
-    if curl "${args[@]}" "${url}" -o "${part}"; then
-      mv -f -- "${part}" "${dst}"
+  local path="$1" dst="$2" url status=0 max_time=600 retries=3
+  local part="${2}.repo-download.$$"
+  case "${path}" in *SHA256SUMS) max_time=30; retries=1 ;; esac
+  local args=(--fail --silent --show-error --location --retry "${retries}" --retry-delay 1 --connect-timeout 8 --max-time "${max_time}")
+  local urls=()
+  if [ -n "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]; then
+    # Authorization stays on the GitHub API, never on the mirror or public raw host.
+    args+=(-H "Authorization: Bearer ${GITHUB_TOKEN:-${GH_TOKEN}}")
+  else
+    [ -z "${RELEASE_MIRROR_BASE}" ] || urls+=("${RELEASE_MIRROR_BASE%/}/${path}")
+    urls+=("https://raw.githubusercontent.com/${RELEASE_REPO}/${RELEASE_BRANCH}/${path}")
+  fi
+  urls+=("https://api.github.com/repos/${RELEASE_REPO}/contents/${path}?ref=${RELEASE_BRANCH}")
+  for url in "${urls[@]}"; do
+    rm -f -- "${part}"
+    status=0
+    if [[ "${url}" == https://api.github.com/* ]]; then
+      curl "${args[@]}" -H "Accept: application/vnd.github.raw" "${url}" -o "${part}" || status=$?
+    else
+      curl "${args[@]}" "${url}" -o "${part}" || status=$?
+    fi
+    if [ "${status}" -eq 0 ]; then
+      mv -f -- "${part}" "${dst}" || return 1
       return 0
     fi
-    rm -f -- "${part}"
-    printf '注意: 国内发布镜像读取失败，尝试 GitHub 备用源\n' >&2
-  fi
-  url="https://api.github.com/repos/${RELEASE_REPO}/contents/${path}?ref=${RELEASE_BRANCH}"
-  if [ -n "${GITHUB_TOKEN:-}" ]; then
-    curl "${args[@]}" -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github.raw" "${url}" -o "${part}"
-  elif [ -n "${GH_TOKEN:-}" ]; then
-    curl "${args[@]}" -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github.raw" "${url}" -o "${part}"
-  else
-    curl "${args[@]}" -H "Accept: application/vnd.github.raw" "${url}" -o "${part}"
-  fi
-  local status=$?
-  if [ "${status}" -ne 0 ]; then
-    rm -f -- "${part}"
-    return "${status}"
-  fi
-  mv -f -- "${part}" "${dst}"
+    printf '注意: 下载源不可用（curl 退出码 %s），继续尝试剩余备用源\n' "${status}" >&2
+  done
+  rm -f -- "${part}"
+  printf '下载 %s 失败。请检查 DNS、代理和网络连通性；HTTP 403/429 可能是限流。也可传入已校验的本地文件 HASHCAKE_BIN_SOURCE 进行离线安装。\n' "${path}" >&2
+  return "${status}"
 }
 
 download_url_file() {
@@ -1834,13 +1944,17 @@ sums_lookup_mirror_anchor() {
 # 校验都成功，所以不会触发任何回退。下面几个函数只解决这一件事：镜像清单缺失或落后时，
 # best-effort 再要一份 GitHub 清单；拿不到（无外网、超时、限流）就维持镜像结果。
 sums_lookup_github() {
-  local dst="$1"
+  local dst="$1" url
   command -v curl >/dev/null 2>&1 || return 1
-  curl --fail --silent --show-error --location --connect-timeout 4 --max-time 8 \
-    -H "Accept: application/vnd.github.raw" \
-    "https://api.github.com/repos/${RELEASE_REPO}/contents/${RELEASE_SUMS_PATH}?ref=${RELEASE_BRANCH}" \
-    -o "${dst}" 2>/dev/null || return 1
-  [ -s "${dst}" ]
+  for url in \
+    "https://raw.githubusercontent.com/${RELEASE_REPO}/${RELEASE_BRANCH}/${RELEASE_SUMS_PATH}" \
+    "https://api.github.com/repos/${RELEASE_REPO}/contents/${RELEASE_SUMS_PATH}?ref=${RELEASE_BRANCH}"; do
+    if curl --fail --silent --show-error --location --connect-timeout 4 --max-time 8 \
+      -H "Accept: application/vnd.github.raw" "${url}" -o "${dst}" 2>/dev/null; then
+      [ ! -s "${dst}" ] || return 0
+    fi
+  done
+  return 1
 }
 
 # 只有「清单取自国内镜像、且没有 GitHub token」时才需要上面那份兜底。
@@ -2149,33 +2263,9 @@ install_config() {
   chown "${SERVICE_USER}:${SERVICE_GROUP}" "${CONFIG_FILE}"
 }
 
-build_spa_if_needed() {
-  case ",${BUILD_FEATURES}," in
-    *,admin-spa,*)
-      [ -d "${SOURCE_ROOT}/hashcake/web" ] || die "缺少 hashcake/web，无法构建 admin-spa"
-      command -v pnpm >/dev/null 2>&1 || die "缺少 pnpm，无法构建 Web 管理后台"
-      log "构建 Web 管理后台"
-      if [ -f "${SOURCE_ROOT}/hashcake/web/pnpm-lock.yaml" ]; then
-        pnpm --dir "${SOURCE_ROOT}/hashcake/web" install --frozen-lockfile
-      else
-        pnpm --dir "${SOURCE_ROOT}/hashcake/web" install
-      fi
-      pnpm --dir "${SOURCE_ROOT}/hashcake/web" build
-      ;;
-  esac
-}
 
-build_hashcake() {
-  [ -f "${SOURCE_ROOT}/Cargo.toml" ] || die "当前脚本不在源码仓库内；请设置 HASHCAKE_BIN_SOURCE 或 HASHCAKE_DOWNLOAD_URL"
-  command -v cargo >/dev/null 2>&1 || die "缺少 cargo，无法从源码构建"
-  build_spa_if_needed
-  log "构建 hashcake release 二进制"
-  if [ -n "${BUILD_FEATURES}" ]; then
-    cargo build --release -p hashcake --bin hashcake --features "${BUILD_FEATURES}"
-  else
-    cargo build --release -p hashcake --bin hashcake
-  fi
-}
+
+
 
 download_hashcake() {
   local dst="$1" manifest_dst="$2" download_path="${1}.download" expected_sha=""
@@ -2183,10 +2273,7 @@ download_hashcake() {
   local url="${HASHCAKE_DOWNLOAD_URL:-}"
   command -v curl >/dev/null 2>&1 || die "缺少 curl，无法下载 HASHCAKE_DOWNLOAD_URL"
   if [ -z "${url}" ]; then
-    case "$(uname -s):$(uname -m)" in
-      Linux:x86_64|Linux:amd64) ;;
-      *) return 1 ;;
-    esac
+    require_release_platform
     local asset
     if ! asset="$(asset_name_for_version hashcake)"; then
       die "无法确定要安装的 HashCake 发布文件"
@@ -2331,12 +2418,9 @@ install_binary() {
       install -m 0644 "${source_manifest}" "${candidate_manifest}"
     fi
     source_label="指定二进制"
-  elif download_hashcake "${candidate}" "${candidate_manifest}"; then
-    source_label="下载的二进制"
   else
-    build_hashcake
-    install -m 0755 "${SOURCE_ROOT}/target/release/hashcake" "${candidate}"
-    source_label="源码构建二进制"
+    download_hashcake "${candidate}" "${candidate_manifest}"
+    source_label="下载的二进制"
   fi
 
   chown root:root "${candidate}"
@@ -2411,13 +2495,13 @@ write_service() {
   local persist_security_now="${1:-1}"
   need_root
   has_systemd || die "当前系统没有可用 systemd，暂不写入服务"
-  require_hardened_systemd
+  require_service_systemd
   case "${persist_security_now}" in
     0|1) ;;
     *) die "write_service 的安全配置写入参数只能是 0 或 1" ;;
   esac
   [ -n "${ADMIN_BIND}" ] || die "管理后台监听地址为空"
-  validate_saved_admin_bind "${ADMIN_BIND}"
+  validate_active_admin_bind "${ADMIN_BIND}"
   URL_PREFIX="$(normalize_url_prefix "${URL_PREFIX}")"
   if [ "${persist_security_now}" = "1" ]; then
     persist_admin_security
@@ -2430,6 +2514,8 @@ write_service() {
     die "systemd 服务路径不是普通文件：${SERVICE_FILE}"
   fi
 
+  local hardening_args
+  hardening_args="$(optional_systemd_hardening)"
   local admin_args="" service_tmp
   if [ "${ADMIN_BIND}" != "off" ] && [ -n "${ADMIN_BIND}" ]; then
     admin_args=" --admin-bind ${ADMIN_BIND} --admin-token-store ${STATE_DIR}/admin.json --admin-audit-db ${STATE_DIR}/admin-audit.sqlite --metrics-token-file ${STATE_DIR}/metrics-token"
@@ -2471,12 +2557,8 @@ ProtectSystem=strict
 ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectKernelModules=true
-ProtectKernelLogs=true
 ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-ProtectProc=invisible
-RestrictSUIDSGID=true
+${hardening_args}
 RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
@@ -2687,12 +2769,7 @@ PY
 }
 
 prepare_installed_service() {
-  require_bash_runtime
-  reject_space_path
-  validate_runtime_inputs
-  require_command python3
-  require_command timeout
-  acquire_installer_lock
+  preflight_service_environment
   is_complete_install || die "HashCake 安装不完整，请先修复本地程序和服务文件"
   validate_root_controlled_parent "${SERVICE_FILE}" "systemd 服务文件"
   [ ! -L "${SERVICE_FILE}" ] && [ "$(stat -c '%u' -- "${SERVICE_FILE}")" = "0" ] \
@@ -2740,11 +2817,12 @@ ${version_output:-请检查程序权限、CPU 架构和运行目录。}
 
 show_service_start_failure() {
   systemctl --no-pager --full status "${SERVICE_NAME}.service" || true
-  if [ -f "${LOG_DIR}/hashcake.err.log" ]; then
-    printf '最近启动错误（完整日志：%s/hashcake.err.log）：\n' "${LOG_DIR}" >&2
-    tail -n 60 "${LOG_DIR}/hashcake.err.log" \
-      | grep -Ei '(^Error:|^Caused by:|^[[:space:]]+[0-9]+:|GLIBC_|Permission denied|thread .* panicked)' >&2 || true
+  if [ -s "${LOG_DIR}/hashcake.err.log" ]; then
+    printf '最近启动日志（可能含凭据，请勿直接公开；完整文件：%s/hashcake.err.log）：\n' "${LOG_DIR}" >&2
+    tail -n 60 -- "${LOG_DIR}/hashcake.err.log" >&2 || true
   fi
+  printf '\n排查命令：journalctl -u %s.service -n 80 --no-pager\n' "${SERVICE_NAME}" >&2
+  printf '%s\n' '若提示端口被占用，用 ss -ltnp 确认占用者；若提示 GLIBC 版本缺失，用 getconf GNU_LIBC_VERSION 核对系统库，勿直接替换系统 libc。' >&2
 }
 
 restart_service() {
@@ -2877,7 +2955,8 @@ EOF
 }
 
 change_web_settings() {
-  preflight_install_or_update
+  preflight_service_environment
+  require_service_systemd
   prepare_install_transaction_environment
   is_complete_install || die "HashCake 安装不完整，请先执行 install 修复或 update 更新"
   begin_install_transaction
@@ -3556,7 +3635,7 @@ admin_reset_password() {
 
 # 主菜单 / CLI admin-password 的统一入口。
 admin_password() {
-  preflight_install_or_update
+  preflight_local_management
   is_complete_install || die "HashCake 安装不完整，请先执行 install 修复或 update 更新"
   load_admin_api_settings
   if [ "${HASHCAKE_ADMIN_RESET:-}" = "1" ]; then

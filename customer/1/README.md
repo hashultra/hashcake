@@ -8,6 +8,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/hashultra/hashcake/main/cust
 
 主菜单始终展示完整功能，按安装与运行、日志与开机启动、后台与配置、维护工具分组。更新保留配置与账号，不会切换到其它 Edition。
 
+一键脚本要求 Linux amd64、GLIBC >= 2.31、bash >= 4、systemd >= 240、Python 3 和 root 权限；systemd 245 可用，可选加固按版本启用，缺失依赖会给出安装提示。
+
 后台改密和忘记密码直接选择“15. 修改后台账号密码 / 忘记密码”；“16. CakeBox 隧道令牌”提供签发、列表和撤销；“17. 安装 / 切换指定版本”仍使用本 Edition 的下载和校验流程。防火墙、系统连接限制和卸载入口均保留。操作结束返回菜单，回车或 0 返回上一级，主菜单中退出。
 
 ## 国内中转（安装、更新与管理，带校验）
