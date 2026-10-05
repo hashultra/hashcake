@@ -12,7 +12,7 @@ RELEASE_MIRROR_BASE="${HASHCAKE_RELEASE_MIRROR_BASE-https://cdn.jsdmirror.com/gh
 # 而提交的清单不可变。它随安装器发布前进——每次改动安装器时把这里更新为上一次公开发布的
 # 锚点提交（prepare-releases.sh 的 DEFAULT_CDN_REF 用最新锚点；这里刻意落后一代，因为
 # 安装器无法在写入时知道自己将被提交到哪个 commit）。
-INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-42d1f333e8bde79bf69c00bb5deddc8467fd9caf}"
+INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-cd13bf70adcb98bd88e750d9f1b6f85b90547879}"
 SERVICE_NAME="${HASHCAKE_SERVICE:-hashcake}"
 SERVICE_USER="${HASHCAKE_USER:-hashcake}"
 SERVICE_GROUP="${HASHCAKE_GROUP:-${SERVICE_USER}}"
@@ -3706,8 +3706,11 @@ confirm_menu_action() {
   esac
 }
 
+MENU_ACTION_SUCCEEDED=0
+
 run_menu_action() {
   local status=0
+  MENU_ACTION_SUCCEEDED=0
   # 不能放进 if / ||：那会让 Bash 忽略整个操作内部的 errexit，破坏失败回滚。
   # 子 shell 隔离 exit、事务 trap、锁和内存状态；每次操作后重新读取安装状态。
   trap ':' INT
@@ -3721,7 +3724,7 @@ run_menu_action() {
   set -e
   trap - INT
   case "${status}" in
-    0) ;;
+    0) MENU_ACTION_SUCCEEDED=1 ;;
     130) printf '\n已中断当前操作，返回菜单。\n' ;;
     *) warn "操作未完成（退出码 ${status}），请查看上方提示；可修正后重试。" ;;
   esac
@@ -3747,7 +3750,8 @@ install_selected_version() {
 }
 
 menu() {
-  local choice="" action="" state="" tokens_choice=""
+  local choice="" action="" state="" tokens_choice="" version=""
+  local -a action_args=()
   while true; do
     state="未安装"
     if is_complete_install; then
@@ -3795,6 +3799,7 @@ menu() {
 EOF
     read_menu_choice choice || return 0
     action=""
+    action_args=()
     case "${choice}" in
       0|q|Q|"") return 0 ;;
       1) action="install" ;;
@@ -3830,7 +3835,14 @@ EOF
           *) warn "无效选择，请输入菜单中的编号"; continue ;;
         esac
         ;;
-      17) action="install-version" ;;
+      17)
+        # 取消留在菜单；只把已选版本交给操作子 shell。
+        printf '输入已发布版本号（如 0.1.6，留空取消）: '
+        IFS= read -r version || return 0
+        [ -n "${version}" ] || { printf '已取消。\n'; continue; }
+        action="install-version"
+        action_args=("${version}")
+        ;;
       18)
         confirm_menu_action "将关闭整机防火墙，不仅影响 HashCake；云安全组仍需自行配置。继续吗？" || continue
         action="disable-firewall"
@@ -3842,7 +3854,15 @@ EOF
       20) action="uninstall" ;;
       *) warn "无效选择，请输入菜单中的编号"; continue ;;
     esac
-    run_menu_action "${action}"
+    run_menu_action "${action}" "${action_args[@]}"
+    # 留住需要阅读或复制的结果；失败和日常维护继续回到菜单。
+    if [ "${MENU_ACTION_SUCCEEDED}" = "1" ]; then
+      case "${action}" in
+        install|update|install-version|status|logs|show-url|web-settings|token-issue|token-list|uninstall)
+          return 0
+          ;;
+      esac
+    fi
   done
 }
 
