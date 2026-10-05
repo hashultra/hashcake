@@ -26,7 +26,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/hashultra/hashcake/main/inst
 国内服务器可使用固定安装器入口。安装或更新时仍自动选择最新稳定版，并核对 `SHA256SUMS`：
 
 ```bash
-bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@cd13bf70adcb98bd88e750d9f1b6f85b90547879/install.sh)
+bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@fdc53a09e6659a278e3cf9962d2229cc418ce46c/install.sh)
 ```
 
 一键管理要求 Linux amd64、GLIBC 2.31 或更高版本、bash 4 或更高版本、systemd 240 或更高版本、Python 3 和 root 权限。
