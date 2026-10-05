@@ -53,7 +53,7 @@ bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@fdc53a09e6659a
 
 ### Windows
 
-Windows amd64 版本请从 [Releases 页面](https://github.com/hashultra/hashcake/releases) 选择包含 Windows 可执行文件的版本。Linux 和 Windows 的发布版本可能不同。
+Windows amd64 程序与 Linux 使用同一正式版本，请从 [Releases 页面](https://github.com/hashultra/hashcake/releases/tag/v0.1.9) 下载 Windows 可执行文件。
 
 ## 更新 HashCake
 
@@ -73,10 +73,10 @@ sudo bash install-hashcake.sh update
 
 需要自动化时可显式使用 `bash install-hashcake.sh update` 等命令；完整命令见 `bash install-hashcake.sh --help`。
 
-## Windows 0.1.10
+## Windows 0.1.9
 
-[下载 Windows x64 程序](https://github.com/hashultra/hashcake/releases/download/v0.1.10/hashcake-0.1.10-windows.exe)
+[下载 Windows x64 程序](https://github.com/hashultra/hashcake/releases/download/v0.1.9/hashcake-0.1.9-windows.exe)
 
 本次 Windows 版本采用压缩加密封装，启动时自动解密并校验完整性，仍支持 Windows 服务运行。EXE 使用自签名证书，Windows 可能提示发布者不受信任；请遵循本机或组织的应用运行策略。
 
-Linux 当前稳定版本保持 0.1.9，继续使用现有安装入口。
+Linux 和 Windows 当前统一为 0.1.9。Linux 继续使用现有安装入口。
