@@ -7,12 +7,13 @@ RELEASE_TAG="${HASHCAKE_VERSION:-latest}"
 RELEASE_BRANCH="${HASHCAKE_RELEASE_BRANCH:-main}"
 RELEASE_PLATFORM="${HASHCAKE_RELEASE_PLATFORM:-linux-amd64}"
 RELEASE_SUMS_PATH="SHA256SUMS"
-RELEASE_MIRROR_BASE="${HASHCAKE_RELEASE_MIRROR_BASE-https://cdn.jsdmirror.com/gh/${RELEASE_REPO}@${RELEASE_BRANCH}}"
+# 默认只访问 GitHub；国内入口在命令中显式设置镜像地址。
+RELEASE_MIRROR_BASE="${HASHCAKE_RELEASE_MIRROR_BASE:-}"
 # 国内入口上一次公开的不可变提交号，用于「没有外网时」的清单兜底：分支清单有缓存窗口，
 # 而提交的清单不可变。它随安装器发布前进——每次改动安装器时把这里更新为上一次公开发布的
 # 锚点提交（prepare-releases.sh 的 DEFAULT_CDN_REF 用最新锚点；这里刻意落后一代，因为
 # 安装器无法在写入时知道自己将被提交到哪个 commit）。
-INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-cd13bf70adcb98bd88e750d9f1b6f85b90547879}"
+INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-35f60e08c9469ec5138ed6c1974b23c6792368d5}"
 SERVICE_NAME="${HASHCAKE_SERVICE:-hashcake}"
 SERVICE_USER="${HASHCAKE_USER:-hashcake}"
 SERVICE_GROUP="${HASHCAKE_GROUP:-${SERVICE_USER}}"
@@ -1858,7 +1859,7 @@ PY
 }
 
 download_repo_file() {
-  local path="$1" dst="$2" url status=0 max_time=600 retries=3
+  local path="$1" dst="$2" expected="${3:-}" url status=0 max_time=600 retries=3
   local part="${2}.repo-download.$$"
   case "${path}" in *SHA256SUMS) max_time=30; retries=1 ;; esac
   local args=(--fail --silent --show-error --location --retry "${retries}" --retry-delay 1 --connect-timeout 8 --max-time "${max_time}")
@@ -1878,6 +1879,11 @@ download_repo_file() {
       curl "${args[@]}" -H "Accept: application/vnd.github.raw" "${url}" -o "${part}" || status=$?
     else
       curl "${args[@]}" "${url}" -o "${part}" || status=$?
+    fi
+    if [ "${status}" -eq 0 ] && [ -n "${expected}" ] \
+      && [ "$(sha256_file "${part}")" != "${expected}" ]; then
+      printf '注意: 下载源返回的文件校验不匹配，丢弃并尝试下一下载源\n' >&2
+      status=1
     fi
     if [ "${status}" -eq 0 ]; then
       mv -f -- "${part}" "${dst}" || return 1
@@ -2279,17 +2285,17 @@ download_hashcake() {
     EXPECTED_BINARY_VERSION="${asset#hashcake-}"
     EXPECTED_BINARY_VERSION="${EXPECTED_BINARY_VERSION%-"${RELEASE_PLATFORM}"}"
     log "下载 hashcake 二进制：github.com/${RELEASE_REPO}/${RELEASE_PLATFORM}/${asset}"
-    if ! download_repo_file "${RELEASE_PLATFORM}/${asset}" "${download_path}"; then
-      rm -f -- "${download_path}"
-      die "下载 HashCake 发布文件失败"
-    fi
     if ! expected_sha="$(repo_asset_sha256 "${RELEASE_PLATFORM}/${asset}")"; then
       rm -f -- "${download_path}"
       die "无法取得 HashCake 发布文件的 SHA-256 校验值"
     fi
+    if ! download_repo_file "${RELEASE_PLATFORM}/${asset}" "${download_path}" "${expected_sha}"; then
+      rm -f -- "${download_path}"
+      die "下载 HashCake 发布文件失败"
+    fi
     manifest_asset="${asset}.manifest.json"
     if manifest_sha="$(repo_asset_sha256_optional "${RELEASE_PLATFORM}/${manifest_asset}")"; then
-      if ! download_repo_file "${RELEASE_PLATFORM}/${manifest_asset}" "${manifest_download}"; then
+      if ! download_repo_file "${RELEASE_PLATFORM}/${manifest_asset}" "${manifest_download}" "${manifest_sha}"; then
         rm -f -- "${download_path}" "${manifest_download}"
         die "signed manifest 已列入 SHA256SUMS，但下载失败"
       fi
