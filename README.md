@@ -45,10 +45,10 @@ sudo bash install-hashcake.sh
 ### 国内服务器
 
 无法稳定访问 GitHub 的服务器使用下面的通用管理入口。该命令不绑定当前已安装版本；选择安装或更新时，安装器会自动查找官方最新稳定版，并根据 SHA256SUMS 校验下载文件：
-国内镜像的清单缓存可能滞后：安装器会在解析版本时与 GitHub 清单比对，镜像落后时按更新的版本安装，下载仍优先使用国内镜像。
+GitHub 入口默认直接使用 GitHub；以下国内入口显式启用国内镜像优先，下载失败或文件校验不符时自动尝试 GitHub，全部失败则停止。国内镜像的清单缓存可能滞后：安装器会在解析版本时与 GitHub 清单比对，镜像落后时按更新的版本安装，下载仍优先使用国内镜像。
 
 ```bash
-bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@fdc53a09e6659a278e3cf9962d2229cc418ce46c/install.sh)
+HASHCAKE_RELEASE_MIRROR_BASE=https://cdn.jsdmirror.com/gh/hashultra/hashcake@main bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@ecdc13839d0818109eb536055604ec6863d615ab/install.sh)
 ```
 
 ### Windows

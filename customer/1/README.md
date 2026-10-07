@@ -15,10 +15,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/hashultra/hashcake/main/cust
 ## 国内中转（安装、更新与管理，带校验）
 
 下面的命令会打开 HashCake 一键安装管理菜单，不绑定当前已安装版本。选择首次安装或更新时，安装器会自动查找 Edition 1 的最新稳定版，并根据该 Edition 的 SHA256SUMS 校验下载文件；日常管理操作不会重新安装程序：
-国内镜像的清单缓存可能滞后：安装器会在解析版本时与 GitHub 清单比对，镜像落后时按更新的版本安装，下载仍优先使用国内镜像。
+GitHub 入口默认直接使用 GitHub；以下国内入口显式启用国内镜像优先，下载失败或文件校验不符时自动尝试 GitHub，全部失败则停止。国内镜像的清单缓存可能滞后：安装器会在解析版本时与 GitHub 清单比对，镜像落后时按更新的版本安装，下载仍优先使用国内镜像。
 
 ```bash
-bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@fdc53a09e6659a278e3cf9962d2229cc418ce46c/customer/1/install.sh)
+HASHCAKE_RELEASE_MIRROR_BASE=https://cdn.jsdmirror.com/gh/hashultra/hashcake@main bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@ecdc13839d0818109eb536055604ec6863d615ab/customer/1/install.sh)
 ```
 
 ## Windows 下载

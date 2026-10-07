@@ -10,5 +10,5 @@
 ## 安装与更新
 
 ```bash
-bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@fdc53a09e6659a278e3cf9962d2229cc418ce46c/install.sh)
+HASHCAKE_RELEASE_MIRROR_BASE=https://cdn.jsdmirror.com/gh/hashultra/hashcake@main bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@ecdc13839d0818109eb536055604ec6863d615ab/install.sh)
 ```
