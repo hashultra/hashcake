@@ -23,4 +23,4 @@ bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@fdc53a09e6659a
 
 ## Windows 下载
 
-Windows 定制版请在 [Releases 页面](https://github.com/hashultra/hashcake/releases) 中选择对应 Edition 的资产；没有对应文件时，请勿使用官方版替代。
+Windows 定制版从本 Edition 的 [windows 目录](./windows/) 下载，校验值见 [SHA256SUMS](./SHA256SUMS)。请勿使用官方版程序替代定制版。
