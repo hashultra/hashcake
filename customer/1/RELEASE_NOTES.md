@@ -21,5 +21,5 @@ Linux AMD64 与 Windows 均提供同版本文件。Windows 使用带时间戳的
 国内服务器管理入口：
 
 ```bash
-HASHCAKE_RELEASE_MIRROR_BASE=https://cdn.jsdmirror.com/gh/hashultra/hashcake@main bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@ecdc13839d0818109eb536055604ec6863d615ab/customer/1/install.sh)
+HASHCAKE_RELEASE_MIRROR_BASE=https://cdn.jsdmirror.com/gh/hashultra/hashcake@main bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@8c5c83b540ecfcacaa5341cb7668dbd3bd3b3ef0/customer/1/install.sh)
 ```
