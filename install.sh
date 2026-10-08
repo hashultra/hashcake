@@ -15,6 +15,7 @@ RELEASE_MIRROR_BASE="${HASHCAKE_RELEASE_MIRROR_BASE:-}"
 # 安装器无法在写入时知道自己将被提交到哪个 commit）。
 INSTALLER_ANCHOR_REF="${HASHCAKE_INSTALLER_ANCHOR_REF:-35f60e08c9469ec5138ed6c1974b23c6792368d5}"
 SERVICE_NAME="${HASHCAKE_SERVICE:-hashcake}"
+NEEDRESTART_DIR="/etc/needrestart"
 SERVICE_USER="${HASHCAKE_USER:-hashcake}"
 SERVICE_GROUP="${HASHCAKE_GROUP:-${SERVICE_USER}}"
 INSTALL_DIR="${HASHCAKE_HOME:-/opt/hashcake}"
@@ -2495,11 +2496,49 @@ ${version_output:-未返回错误详情。请检查 CPU 架构和 GLIBC 版本�
   ok "已成组安装${source_label} binary + manifest（hashcake ${actual_version}）"
 }
 
+configure_needrestart() {
+  # The encrypted payload intentionally runs from an anonymous inode. Its
+  # /proc/PID/exe ends in (deleted), which needrestart otherwise treats as an
+  # obsolete executable on every package transaction, even just after startup.
+  # Exclude only this service from automatic restarts, not OS security updates.
+  need_root
+  validate_runtime_inputs
+  [ ! -L "${NEEDRESTART_DIR}" ] || die "needrestart 配置目录不能是符号链接"
+  [ -d "${NEEDRESTART_DIR}" ] || return 0
+  local conf_dir="${NEEDRESTART_DIR}/conf.d" conf_file conf_tmp
+  conf_file="${conf_dir}/90-${SERVICE_NAME}.conf"
+  validate_root_controlled_parent "${conf_dir}" "needrestart 配置"
+  [ ! -L "${conf_dir}" ] || die "needrestart 附加配置目录不能是符号链接"
+  if [ ! -e "${conf_dir}" ]; then
+    mkdir -m 0755 -- "${conf_dir}"
+    chown root:root "${conf_dir}"
+  fi
+  validate_root_controlled_parent "${conf_file}" "needrestart 服务规则"
+  [ ! -L "${conf_file}" ] || die "needrestart 服务规则不能是符号链接"
+  [ ! -e "${conf_file}" ] || [ -f "${conf_file}" ] || die "needrestart 服务规则不是普通文件"
+  conf_tmp="$(mktemp "${conf_file}.XXXXXX")"
+  printf '%s\n' \
+    '# HashCake anonymous encrypted payload: restarts are owned by its installer/operator.' \
+    '# Keep OS security updates enabled; exclude only this exact systemd service.' \
+    "\$nrconf{override_rc}->{qr(^\\Q${SERVICE_NAME}\\E\\.service\$)} = 0;" > "${conf_tmp}"
+  chmod 0644 "${conf_tmp}"
+  chown root:root "${conf_tmp}"
+  if [ -f "${conf_file}" ] && cmp -s "${conf_tmp}" "${conf_file}"; then
+    chmod 0644 "${conf_file}"
+    chown root:root "${conf_file}"
+    rm -f -- "${conf_tmp}"
+  else
+    mv -fT -- "${conf_tmp}" "${conf_file}"
+    ok "已阻止系统更新误重启 ${SERVICE_NAME}，系统安全更新保持启用"
+  fi
+}
+
 write_service() {
   local persist_security_now="${1:-1}"
   need_root
   has_systemd || die "当前系统没有可用 systemd，暂不写入服务"
   require_service_systemd
+  configure_needrestart
   case "${persist_security_now}" in
     0|1) ;;
     *) die "write_service 的安全配置写入参数只能是 0 或 1" ;;
@@ -2710,6 +2749,7 @@ EOF
 start_service() {
   need_root
   has_systemd || die "当前系统没有可用 systemd"
+  configure_needrestart
   if systemctl is-active --quiet "${SERVICE_NAME}.service"; then
     ok "${SERVICE_NAME} 已在运行，未重复启动；需要重启时请选择重启服务"
     status_service
@@ -2775,6 +2815,7 @@ PY
 prepare_installed_service() {
   preflight_service_environment
   is_complete_install || die "HashCake 安装不完整，请先修复本地程序和服务文件"
+  configure_needrestart
   validate_root_controlled_parent "${SERVICE_FILE}" "systemd 服务文件"
   [ ! -L "${SERVICE_FILE}" ] && [ "$(stat -c '%u' -- "${SERVICE_FILE}")" = "0" ] \
     && [ $((8#$(stat -c '%a' -- "${SERVICE_FILE}") & 8#022)) -eq 0 ] \
@@ -3886,6 +3927,12 @@ dispatch_installer_command() {
   cmd="$(resolve_installer_command "$@")"
   [ "$#" -eq 0 ] || shift
   case "${cmd}" in
+    help|--help|-h) installer_usage; return 0 ;;
+  esac
+  # Validate before any direct management command can touch files or pass a
+  # unit name to systemctl, which interprets wildcard names itself.
+  validate_runtime_inputs
+  case "${cmd}" in
     install) install_service ;;
     update) update_service ;;
     install-version) install_selected_version "$@" ;;
@@ -3921,7 +3968,6 @@ dispatch_installer_command() {
       ;;
     uninstall) uninstall ;;
     menu|"") menu ;;
-    help|--help|-h) installer_usage ;;
     *) die "未知命令：${cmd}；使用 --help 查看可用命令" ;;
   esac
 }
