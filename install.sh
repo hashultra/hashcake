@@ -27,6 +27,7 @@ STATE_DIR="${HASHCAKE_STATE_DIR:-${INSTALL_DIR}/state}"
 LOG_DIR="${HASHCAKE_LOG_DIR:-${INSTALL_DIR}/logs}"
 BACKUP_DIR="${HASHCAKE_BACKUP_DIR:-${INSTALL_DIR}/backup}"
 BIN_PATH="${INSTALL_DIR}/hashcake"
+SIDECAR_PATH="${INSTALL_DIR}/factory-telemetry-agent"
 MANIFEST_PATH="${INSTALL_DIR}/hashcake.manifest.json"
 INSTALLER_STATE_DIR="${HASHCAKE_INSTALLER_STATE_DIR:-${INSTALL_DIR}/.installer}"
 INSTALL_ENV="${INSTALLER_STATE_DIR}/install.env"
@@ -917,11 +918,13 @@ TXN_HAD_INSTALL_ENV=0
 TXN_HAD_LEGACY_INSTALL_ENV=0
 TXN_HAD_ADMIN_JSON=0
 TXN_HAD_CONFIG=0
+TXN_HAD_SIDECAR=0
 TXN_SERVICE_WAS_ENABLED=0
 TXN_SERVICE_WAS_ACTIVE=0
 TXN_BINARY_CHANGED=0
 TXN_MANIFEST_CHANGED=0
 TXN_SERVICE_CHANGED=0
+TXN_SIDECAR_CHANGED=0
 
 cleanup_install_candidate() {
   if [ -n "${INSTALL_CANDIDATE_DIR}" ]; then
@@ -935,7 +938,7 @@ write_install_transaction_journal() {
     "${TXN_HAD_BINARY}" "${TXN_HAD_MANIFEST}" "${TXN_HAD_SERVICE}" \
     "${TXN_HAD_INSTALL_ENV}" "${TXN_HAD_LEGACY_INSTALL_ENV}" \
     "${TXN_HAD_ADMIN_JSON}" "${TXN_HAD_CONFIG}" \
-    "${TXN_SERVICE_WAS_ENABLED}" "${TXN_SERVICE_WAS_ACTIVE}" <<'PY'
+    "${TXN_SERVICE_WAS_ENABLED}" "${TXN_SERVICE_WAS_ACTIVE}" "${TXN_HAD_SIDECAR}" <<'PY'
 import json
 import os
 import sys
@@ -945,12 +948,12 @@ directory = Path(sys.argv[1])
 keys = [
     "had_binary", "had_manifest", "had_service", "had_install_env",
     "had_legacy_install_env", "had_admin_json", "had_config",
-    "service_was_enabled", "service_was_active",
+    "service_was_enabled", "service_was_active", "had_sidecar",
 ]
 values = [int(value) for value in sys.argv[2:]]
 if any(value not in (0, 1) for value in values):
     raise SystemExit("invalid install transaction flag")
-payload = {"schema_version": 1, **dict(zip(keys, values))}
+payload = {"schema_version": 2, **dict(zip(keys, values))}
 # Backups must reach disk before phase-active makes recovery authoritative.
 for child in directory.iterdir():
     if child.is_file() and not child.is_symlink():
@@ -982,7 +985,7 @@ PY
 mark_install_transaction_committed() {
   python3 - "${INSTALL_TRANSACTION_DIR}" \
     "${BIN_PATH}" "${MANIFEST_PATH}" "${SERVICE_FILE}" "${INSTALL_ENV}" \
-    "${LEGACY_INSTALL_ENV}" "${STATE_DIR}/admin.json" "${CONFIG_FILE}" <<'PY'
+    "${LEGACY_INSTALL_ENV}" "${STATE_DIR}/admin.json" "${CONFIG_FILE}" "${SIDECAR_PATH}" <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -1013,7 +1016,7 @@ PY
 
 sync_install_transaction_targets() {
   python3 - "${BIN_PATH}" "${MANIFEST_PATH}" "${SERVICE_FILE}" "${INSTALL_ENV}" \
-    "${LEGACY_INSTALL_ENV}" "${STATE_DIR}/admin.json" "${CONFIG_FILE}" <<'PY'
+    "${LEGACY_INSTALL_ENV}" "${STATE_DIR}/admin.json" "${CONFIG_FILE}" "${SIDECAR_PATH}" <<'PY'
 import os
 import stat
 import sys
@@ -1040,6 +1043,8 @@ for raw in sys.argv[1:]:
         os.close(fd)
 
 for parent in sorted(parents, key=lambda item: str(item)):
+    if not parent.exists():
+        continue
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
     fd = os.open(parent, flags)
     try:
@@ -1167,19 +1172,25 @@ expected = [
 ]
 with open(sys.argv[1], encoding="utf-8") as handle:
     value = json.load(handle)
-if set(value) != set(["schema_version"] + expected) or value["schema_version"] != 1:
+if value.get("schema_version") == 2:
+    expected.append("had_sidecar")
+elif value.get("schema_version") != 1:
     raise SystemExit("invalid install transaction journal schema")
+if set(value) != set(["schema_version"] + expected):
+    raise SystemExit("invalid install transaction journal fields")
 for key in expected:
     if value[key] not in (0, 1):
         raise SystemExit(f"invalid {key}")
     print(value[key])
+if value["schema_version"] == 1:
+    print(0)
 PY
     )"; then
       die "无法解析安装事务 journal：${txn}"
     fi
     fields=()
     while IFS= read -r value; do fields+=("${value}"); done <<< "${journal_output}"
-    [ "${#fields[@]}" -eq 9 ] || die "安装事务 journal 字段数量错误：${txn}"
+    [ "${#fields[@]}" -eq 10 ] || die "安装事务 journal 字段数量错误：${txn}"
 
     warn "发现上次未提交的安装事务，恢复 binary + manifest + 配置：${txn}"
     INSTALL_TRANSACTION_DIR="${txn}"
@@ -1192,6 +1203,7 @@ PY
     TXN_HAD_CONFIG="${fields[6]}"
     TXN_SERVICE_WAS_ENABLED="${fields[7]}"
     TXN_SERVICE_WAS_ACTIVE="${fields[8]}"
+    TXN_HAD_SIDECAR="${fields[9]}"
     failed=0
     if has_systemd; then
       systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
@@ -1203,6 +1215,9 @@ PY
     restore_transaction_file "${LEGACY_INSTALL_ENV}" legacy-install-env "${TXN_HAD_LEGACY_INSTALL_ENV}" || failed=1
     restore_transaction_file "${STATE_DIR}/admin.json" admin-json "${TXN_HAD_ADMIN_JSON}" || failed=1
     restore_transaction_file "${CONFIG_FILE}" config "${TXN_HAD_CONFIG}" || failed=1
+    if python3 -c 'import json,sys; sys.exit(json.load(open(sys.argv[1]))["schema_version"] != 2)' "${txn}/journal.json"; then
+      restore_transaction_file "${SIDECAR_PATH}" sidecar "${TXN_HAD_SIDECAR}" || failed=1
+    fi
     sync_install_transaction_targets || failed=1
     restore_install_transaction_systemd_state || failed=1
     [ "${failed}" = "0" ] || die "未提交安装事务自动恢复不完整：${txn}"
@@ -1256,11 +1271,13 @@ begin_install_transaction() {
   TXN_HAD_LEGACY_INSTALL_ENV=0
   TXN_HAD_ADMIN_JSON=0
   TXN_HAD_CONFIG=0
+  TXN_HAD_SIDECAR=0
   TXN_SERVICE_WAS_ENABLED=0
   TXN_SERVICE_WAS_ACTIVE=0
   TXN_BINARY_CHANGED=0
   TXN_MANIFEST_CHANGED=0
   TXN_SERVICE_CHANGED=0
+  TXN_SIDECAR_CHANGED=0
   INSTALL_TRANSACTION_DIR="$(mktemp -d "${BACKUP_DIR}/.install-transaction.XXXXXX")"
   chmod 700 "${INSTALL_TRANSACTION_DIR}"
 
@@ -1271,6 +1288,7 @@ begin_install_transaction() {
   backup_transaction_file "${LEGACY_INSTALL_ENV}" legacy-install-env TXN_HAD_LEGACY_INSTALL_ENV
   backup_transaction_file "${STATE_DIR}/admin.json" admin-json TXN_HAD_ADMIN_JSON
   backup_transaction_file "${CONFIG_FILE}" config TXN_HAD_CONFIG
+  backup_transaction_file "${SIDECAR_PATH}" sidecar TXN_HAD_SIDECAR
 
   if has_systemd && systemctl is-enabled --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
     TXN_SERVICE_WAS_ENABLED=1
@@ -1303,7 +1321,7 @@ rollback_install_transaction() {
     restore_firewall_state || failed=1
     FIREWALL_ROLLBACK_ARMED=0
   fi
-  if has_systemd && { [ "${TXN_BINARY_CHANGED}" = "1" ] || [ "${TXN_MANIFEST_CHANGED}" = "1" ] || [ "${TXN_SERVICE_CHANGED}" = "1" ]; }; then
+  if has_systemd && { [ "${TXN_BINARY_CHANGED}" = "1" ] || [ "${TXN_MANIFEST_CHANGED}" = "1" ] || [ "${TXN_SERVICE_CHANGED}" = "1" ] || [ "${TXN_SIDECAR_CHANGED}" = "1" ]; }; then
     systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
   fi
 
@@ -1320,6 +1338,9 @@ rollback_install_transaction() {
   restore_transaction_file "${LEGACY_INSTALL_ENV}" legacy-install-env "${TXN_HAD_LEGACY_INSTALL_ENV}" || failed=1
   restore_transaction_file "${STATE_DIR}/admin.json" admin-json "${TXN_HAD_ADMIN_JSON}" || failed=1
   restore_transaction_file "${CONFIG_FILE}" config "${TXN_HAD_CONFIG}" || failed=1
+  if [ "${TXN_SIDECAR_CHANGED}" = "1" ]; then
+    restore_transaction_file "${SIDECAR_PATH}" sidecar "${TXN_HAD_SIDECAR}" || failed=1
+  fi
   sync_install_transaction_targets || failed=1
 
   restore_install_transaction_systemd_state || failed=1
@@ -2496,6 +2517,78 @@ ${version_output:-未返回错误详情。请检查 CPU 架构和 GLIBC 版本�
   ok "已成组安装${source_label} binary + manifest（hashcake ${actual_version}）"
 }
 
+# Prepare the exact official binary. The daemon owns its lifecycle.
+install_cakebox_sidecar() {
+  local requirement fields version platform archive_name archive_sha binary_sha
+  if ! requirement="$(run_hashcake_as_service_user "${BIN_PATH}" sidecar-requirement 2>/dev/null)"; then
+    if run_hashcake_as_service_user "${BIN_PATH}" --help 2>/dev/null | grep -q 'sidecar-requirement'; then
+      die "无法读取 HashCake 的官方 sidecar 要求，未替换 sidecar"
+    fi
+    warn "此 HashCake 版本尚不支持 Web 一键开启 CakeBox；已保留原部署，更新程序后自动准备"
+    return 0
+  fi
+  fields="$(python3 - "${requirement}" <<'PY'
+import json, re, sys
+value = json.loads(sys.argv[1])
+if value.get("schema_version") != 1:
+    raise SystemExit("unsupported sidecar requirement schema")
+version, platform = value.get("version", ""), value.get("platform", "")
+if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) or platform not in ("linux-amd64", "linux-arm64", "linux-armv7"):
+    raise SystemExit("invalid official sidecar version or platform")
+archive = value.get("archive_name", "")
+if archive != f"sing-box-{version}-{platform}.tar.gz":
+    raise SystemExit("invalid official sidecar archive name")
+for key in ("archive_sha256", "binary_sha256"):
+    if not re.fullmatch(r"[0-9a-f]{64}", value.get(key, "")):
+        raise SystemExit("invalid official sidecar SHA-256")
+print(version, platform, archive, value["archive_sha256"], value["binary_sha256"])
+PY
+)" || die "HashCake 返回的 sidecar 要求无效"
+  read -r version platform archive_name archive_sha binary_sha <<< "${fields}"
+  if [ -e "${SIDECAR_PATH}" ] || [ -L "${SIDECAR_PATH}" ]; then
+    [ -f "${SIDECAR_PATH}" ] && [ ! -L "${SIDECAR_PATH}" ] || die "sidecar 必须是普通文件，不能为符号链接"
+    if [ -x "${SIDECAR_PATH}" ] && [ "$(sha256_file "${SIDECAR_PATH}")" = "${binary_sha}" ]; then
+      ok "已确认 CakeBox 官方 sidecar（${version}）"
+      return 0
+    fi
+  fi
+  INSTALL_CANDIDATE_DIR="$(mktemp -d "${INSTALL_DIR}/.sidecar-candidate.XXXXXX")"
+  local candidate="${INSTALL_CANDIDATE_DIR}/factory-telemetry-agent" archive_path="${INSTALL_CANDIDATE_DIR}/sidecar.tar.gz"
+  if [ -n "${HASHCAKE_SIDECAR_SOURCE:-}" ]; then
+    [ -f "${HASHCAKE_SIDECAR_SOURCE}" ] && [ ! -L "${HASHCAKE_SIDECAR_SOURCE}" ] || die "HASHCAKE_SIDECAR_SOURCE 必须是普通文件"
+    install -m 0755 "${HASHCAKE_SIDECAR_SOURCE}" "${candidate}"
+  else
+    require_command curl
+    log "自动准备 CakeBox 官方 sidecar（${version}）"
+    if ! download_url_file "https://github.com/SagerNet/sing-box/releases/download/v${version}/${archive_name}" "${archive_path}"; then
+      cleanup_install_candidate
+      warn "无法下载 CakeBox 官方 sidecar；HashCake 安装/更新继续，Web 一键启用暂不可用。可设置 HASHCAKE_SIDECAR_SOURCE 指向配套官方二进制后重试（仍严格校验版本与 SHA-256）"
+      return 0
+    fi
+    verify_file_sha256 "${archive_path}" "${archive_sha}" || die "sidecar 压缩包校验失败"
+    python3 - "${archive_path}" "${candidate}" <<'PY'
+import os, shutil, sys, tarfile
+with tarfile.open(sys.argv[1], "r:gz") as archive:
+    members = archive.getmembers()
+    if len(members) > 2000:
+        raise SystemExit("oversized sidecar archive")
+    binaries = [member for member in members if member.name.rsplit("/", 1)[-1] == "sing-box"]
+    if len(binaries) != 1 or not binaries[0].isfile() or binaries[0].size > 256 * 1024 * 1024:
+        raise SystemExit("sidecar archive must contain one regular sing-box binary")
+    with archive.extractfile(binaries[0]) as source, open(sys.argv[2], "xb") as output:
+        shutil.copyfileobj(source, output)
+    os.chmod(sys.argv[2], 0o755)
+PY
+  fi
+  verify_file_sha256 "${candidate}" "${binary_sha}" || die "sidecar 二进制校验失败"
+  [ "$("${candidate}" version 2>/dev/null | awk '$1 == "sing-box" && $2 == "version" {print $3; exit}')" = "${version}" ] || die "sidecar 版本不符合当前 HashCake 要求"
+  chown root:root "${candidate}"
+  TXN_SIDECAR_CHANGED=1
+  mv -fT "${candidate}" "${SIDECAR_PATH}"
+  cleanup_install_candidate
+  ok "已准备 CakeBox 隧道组件，可在 Web 后台一键开启"
+}
+
 configure_needrestart() {
   # The encrypted payload intentionally runs from an anonymous inode. Its
   # /proc/PID/exe ends in (deleted), which needrestart otherwise treats as an
@@ -2585,6 +2678,7 @@ Group=${SERVICE_GROUP}
 WorkingDirectory=${INSTALL_DIR}
 Environment="RUST_LOG=${RUST_LOG_VALUE}"
 Environment="HASHCAKE_ENVELOPE_EXEC_DIR=${STATE_DIR}"
+Environment="HASHCAKE_SIDECAR_BIN=${SIDECAR_PATH}"
 ExecStart=${BIN_PATH} --config ${CONFIG_FILE} --no-tui --token-store ${STATE_DIR}/tokens.json --log-dir ${LOG_DIR} --log-file-prefix hashcake-debug.log${admin_args}${update_args}
 Restart=always
 RestartSec=2
@@ -2609,7 +2703,7 @@ SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
-ReadOnlyPaths=${BIN_PATH} -${MANIFEST_PATH}
+ReadOnlyPaths=${BIN_PATH} -${MANIFEST_PATH} -${SIDECAR_PATH}
 ReadWritePaths=${CONFIG_DIR} ${STATE_DIR} ${LOG_DIR}
 StandardOutput=append:${LOG_DIR}/hashcake.service.log
 StandardError=append:${LOG_DIR}/hashcake.err.log
@@ -2653,6 +2747,7 @@ EOF
   cat <<EOF
 安全访问路径: /${URL_PREFIX}/
 HTTPS: ${HTTPS_ACTIVE}
+CakeBox: 在 Web 后台「CakeBox」一键开启并签发令牌
 EOF
   print_install_firewall_notice
   case "${HTTPS_ACTIVE}" in
@@ -2677,6 +2772,7 @@ install_service() {
   ensure_metrics_token
   install_config
   install_binary
+  install_cakebox_sidecar
   admin_state="$(admin_store_state)"
   case "${admin_state}" in
     missing|uninitialized)
@@ -2725,6 +2821,7 @@ update_service() {
   ensure_metrics_token
   install_config
   install_binary
+  install_cakebox_sidecar
   write_service
   systemctl enable "${SERVICE_NAME}.service"
   configure_install_firewall
