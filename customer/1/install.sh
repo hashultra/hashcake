@@ -373,15 +373,13 @@ random_secret() {
   fi
 }
 
-random_segment() {
-  local prefix="$1"
-  local body
+random_url_prefix() {
+  # 128 random bits; no product marker or shared per-install prefix.
   if command -v openssl >/dev/null 2>&1; then
-    body="$(openssl rand -hex 4)"
+    openssl rand -hex 16
   else
-    body="$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+    od -An -N16 -tx1 /dev/urandom | tr -d ' \n'
   fi
-  printf '%s-%s' "${prefix}" "${body}"
 }
 
 normalize_url_prefix() {
@@ -750,7 +748,7 @@ configure_web_defaults_for_install() {
     ADMIN_BIND="0.0.0.0:$(random_port)"
   fi
   if [ -z "${URL_PREFIX}" ]; then
-    URL_PREFIX="$(random_segment hc)"
+    URL_PREFIX="$(random_url_prefix)"
   else
     URL_PREFIX="$(normalize_url_prefix "${URL_PREFIX}")"
   fi
@@ -762,7 +760,7 @@ configure_web_defaults_for_install() {
 configure_web_defaults_for_update() {
   load_install_env
   [ -n "${ADMIN_BIND}" ] || ADMIN_BIND="0.0.0.0:$(random_port)"
-  [ -n "${URL_PREFIX}" ] || URL_PREFIX="$(random_segment hc)"
+  [ -n "${URL_PREFIX}" ] || URL_PREFIX="$(random_url_prefix)"
   URL_PREFIX="$(normalize_url_prefix "${URL_PREFIX}")"
   [ -n "${HTTPS_ACTIVE}" ] || HTTPS_ACTIVE="true"
 }

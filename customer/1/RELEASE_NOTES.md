@@ -1,25 +1,24 @@
-# HashCake v0.1.13
+# HashCake 定制版 1 · 0.1.15
 
 ## 更新内容
 
-- 改善大量矿机持续接入、多币种同时工作和集中断连时的稳定性。
-- 修复系统更新检查可能引发服务重复重启的问题。
-- 修复 Windows 配置保存误报失败及并发首次初始化的问题。
-- 改进中转连接状态显示，并加强管理脚本的输入校验。
+- 改善多币种同时运行、上游响应变慢和连接回收时的稳定性。
+- 修复管理后台配置更新、账号初始化和服务重启过程中的边界问题。
+- 改进中转连接状态显示与异常处理，减少大量设备集中接入或断线重连时的影响。
 
 ## 升级提示
 
 请从最新版说明中重新获取管理脚本再执行更新，以应用本次脚本修复。更新保留原有配置与账号；服务更新会短暂断开连接，建议在维护窗口操作。
 
-Linux AMD64 与 Windows 均提供同版本文件。Windows 使用带时间戳的代码签名，部分设备仍可能显示安全提示。
+Linux AMD64 与 Windows 均提供同版本定制文件。Windows 部分设备可能显示安全提示，请先核对下载文件校验值。
 
 ## 下载与安装
 
-- Linux AMD64：`hashcake-0.1.13-linux-amd64`
-- Windows AMD64：`hashcake-0.1.13-windows.exe`
+- Linux AMD64：`hashcake-0.1.15-linux-amd64`
+- Windows AMD64：`hashcake-0.1.15-windows.exe`
 
-国内服务器管理入口：
+定制版管理入口：
 
 ```bash
-HASHCAKE_RELEASE_MIRROR_BASE=https://cdn.jsdmirror.com/gh/hashultra/hashcake@main bash <(curl -fsSL https://cdn.jsdmirror.com/gh/hashultra/hashcake@8c5c83b540ecfcacaa5341cb7668dbd3bd3b3ef0/customer/1/install.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/hashultra/hashcake/main/customer/1/install.sh)
 ```
