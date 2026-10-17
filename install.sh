@@ -2698,7 +2698,8 @@ RestrictRealtime=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK: CakeBox 内置 sidecar（sing-box 1.13.x）启动即订阅路由更新，缺这一族会 exit 1
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 ReadOnlyPaths=${BIN_PATH} -${MANIFEST_PATH} -${SIDECAR_PATH}
