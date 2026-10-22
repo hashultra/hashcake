@@ -1,5 +1,5 @@
-9f332877c0434a388a812da48bebbdc8626abcb77dcf0876343f5df9d5e2cffc  README.md
-a136d838f553376c3eb34fe014d9f1e30e3c722b0aacad13a552950263543dad  RELEASE_NOTES.md
+12d3f474d047377cfd8c0870266179ce6b6731afb3977ef443295fedd3252ec7  README.md
+cab6a74052aedfbf6563b8afbedd6ab1766d43ffb0c5d595fc16420496fa56f6  RELEASE_NOTES.md
 8ab82e0a01c3f05a4ef7f9efdae66999164b6be78dc411db2ccfea4f7d2ba2c7  customer/1/README.md
 fcf19f3b79255cba7ec580804041b4e4bda7356340362849a99c887f1cbf575a  customer/1/RELEASE_NOTES.md
 5c5b16352fd66cc3d1fb393f73386ba1a0ddb5019e34a898b0c43482c70ab010  customer/1/install.sh
@@ -26,6 +26,7 @@ ab91d75cdaa2d78b0d408609727b6b62a5c54dfa6155a3e498b52734f2f4f04c  linux-amd64/ha
 22f2cff62e316ab3b2cc1c7941d3ec8f5e1cc5063a49959dc5ca4ceda59fd24e  linux-amd64/hashcake-0.1.14-linux-amd64
 fd08f497a956943a4dbea22dfdb06fd354ae706e668e592a61735602001de46a  linux-amd64/hashcake-0.1.15-linux-amd64
 9b0da3d1561bc34827b663cf12b711f7dada46238b85c60280b01c6ed463a0cb  linux-amd64/hashcake-0.1.16-linux-amd64
+2e3cf557677b94ed76305ec904e727da6c207d9afe45360b36ad58357ddf296b  linux-amd64/hashcake-0.1.17-linux-amd64
 2bde678212926f939c27bde92b3e8fd80b3dbd23043ecce698327d96173ba490  linux-amd64/hashcake-0.1.2-linux-amd64
 11a14dc6b65a9b43ad89c53e906692c3539a39e4e8c83e1db226a25e4cc8d55d  linux-amd64/hashcake-0.1.4-linux-amd64
 d88670b53bfdcf7fab382972adadef7548841c02cef8f122bf05c38021e7906c  linux-amd64/hashcake-0.1.5-linux-amd64
@@ -40,4 +41,5 @@ d13e904bcdc86491a586d23e02cf7a13a1fbc94032c4a88bed7b34b0d2358ecc  windows/hashca
 02c6d337882332b82440b4e8c5a51c2640f92a647a092ba594c35d9bcb86b6a3  windows/hashcake-0.1.14-windows.exe
 4c5bf07d5aef59e26c71b3313d03803416713942a0bed0cbf7ab4acffd7cd131  windows/hashcake-0.1.15-windows.exe
 bfa77aed6735b8c4ffc420cd8ee190e1352b16ea7e50c0977ac78e1c0d81c684  windows/hashcake-0.1.16-windows.exe
+8ae7afe05688e2adce8156b18df9aca97fd1a502d20daa5e54d276145a2b0d5e  windows/hashcake-0.1.17-windows.exe
 08656905ecaf3897ddbb54c9e9a5c405969dfae5e0c0cd0b141db33b68fbc5f7  windows/hashcake-0.1.9-windows.exe
