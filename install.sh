@@ -42,6 +42,8 @@ MANIFEST_URL="${HASHCAKE_MANIFEST_URL:-}"
 DOWNLOAD_MANIFEST_SHA256="${HASHCAKE_MANIFEST_SHA256:-}"
 RUST_LOG_VALUE="${RUST_LOG:-hashcake=info}"
 START_AFTER_INSTALL="${HASHCAKE_START_AFTER_INSTALL:-1}"
+# 首次安装沿用两段稳定性确认；更新只做一段，避免把额外的 2 秒算进矿机端口关闭窗口。
+RESTART_STRICT_CHECK="${HASHCAKE_RESTART_STRICT_CHECK:-0}"
 ALLOW_PRERELEASE="${HASHCAKE_ALLOW_PRERELEASE:-0}"
 EXPECTED_BINARY_VERSION=""
 WEB_PORT_MIN="${HASHCAKE_WEB_PORT_MIN:-10000}"
@@ -208,6 +210,10 @@ validate_install_inputs() {
   case "${START_AFTER_INSTALL}" in
     0|1) ;;
     *) die "HASHCAKE_START_AFTER_INSTALL 只能是 0 或 1：${START_AFTER_INSTALL}" ;;
+  esac
+  case "${RESTART_STRICT_CHECK}" in
+    0|1) ;;
+    *) die "HASHCAKE_RESTART_STRICT_CHECK 只能是 0 或 1：${RESTART_STRICT_CHECK}" ;;
   esac
   case "${ALLOW_PRERELEASE}" in
     0|1) ;;
@@ -923,6 +929,18 @@ TXN_BINARY_CHANGED=0
 TXN_MANIFEST_CHANGED=0
 TXN_SERVICE_CHANGED=0
 TXN_SIDECAR_CHANGED=0
+SIDECAR_REQUIREMENT_STATE=""
+# daemon-reload 在实测机器上要 ~0.5s；它必须在停服**之前**完成，否则会整段
+# 落在矿机端口关闭窗口里。
+SYSTEMD_RELOADED=0
+
+# systemd 只需要在 unit 内容真正变化时重新加载；记录是否已经加载过，
+# 避免在停服之后再来一次（那是矿机端口关闭窗口的一部分）。
+reload_systemd_if_needed() {
+  [ "${SYSTEMD_RELOADED}" = "1" ] && return 0
+  systemctl daemon-reload || return 1
+  SYSTEMD_RELOADED=1
+}
 
 cleanup_install_candidate() {
   if [ -n "${INSTALL_CANDIDATE_DIR}" ]; then
@@ -2492,6 +2510,10 @@ ${version_output:-未返回错误详情。请检查 CPU 架构和 GLIBC 版本�
   fi
   [ "${INSTALL_TRANSACTION_ACTIVE}" = "1" ] \
     || { rm -rf -- "${candidate_dir}"; die "二进制/manifest 替换必须在安装事务内执行"; }
+  # Sidecar 准备（含一次网络下载和一次 --help 探测）必须在停服之前做完：
+  # 它只读候选二进制、只写候选目录，不碰运行中的进程；放在停服之后等于把
+  # 这段时间直接算进矿机端口关闭窗口。
+  prepare_cakebox_sidecar_for "${candidate}" || { rm -rf -- "${candidate_dir}"; die "sidecar 准备失败，未替换发布文件"; }
   if has_systemd && systemctl is-active --quiet "${SERVICE_NAME}.service" 2>/dev/null; then
     log "候选文件已通过预检，停止服务后成组替换 binary + manifest"
     systemctl stop "${SERVICE_NAME}.service" \
@@ -2553,13 +2575,20 @@ configure_needrestart() {
 }
 
 # Prepare the exact official binary. The daemon owns its lifecycle.
-install_cakebox_sidecar() {
-  local requirement fields version platform archive_name archive_sha binary_sha
-  if ! requirement="$(run_hashcake_as_service_user "${BIN_PATH}" sidecar-requirement 2>/dev/null)"; then
-    if run_hashcake_as_service_user "${BIN_PATH}" --help 2>/dev/null | grep -q 'sidecar-requirement'; then
-      die "无法读取 HashCake 的官方 sidecar 要求，未替换 sidecar"
+# 用**候选**二进制准备 CakeBox 官方 sidecar。在停服之前调用。
+#
+# 记录状态供 install_cakebox_sidecar 复用，避免装完再起一次进程探测：
+#   SIDECAR_REQUIREMENT_STATE = prepared | skipped | failed
+# 语义与旧版一致：读不到 sidecar-requirement 说明该版本不支持 Web 一键开启，只提示；
+# 下载失败也只提示。其余（校验值、版本不符）沿用 fail-closed 中止。
+prepare_cakebox_sidecar_for() {
+  local candidate_bin="$1" requirement fields version platform archive_name archive_sha binary_sha
+  if ! requirement="$(run_hashcake_as_service_user "${candidate_bin}" sidecar-requirement 2>/dev/null)"; then
+    if run_hashcake_as_service_user "${candidate_bin}" --help 2>/dev/null | grep -q 'sidecar-requirement'; then
+      return 1
     fi
     warn "此 HashCake 版本尚不支持 Web 一键开启 CakeBox；已保留原部署，更新程序后自动准备"
+    SIDECAR_REQUIREMENT_STATE="skipped"
     return 0
   fi
   fields="$(python3 - "${requirement}" <<'PY'
@@ -2584,6 +2613,7 @@ PY
     [ -f "${SIDECAR_PATH}" ] && [ ! -L "${SIDECAR_PATH}" ] || die "sidecar 必须是普通文件，不能为符号链接"
     if [ -x "${SIDECAR_PATH}" ] && [ "$(sha256_file "${SIDECAR_PATH}")" = "${binary_sha}" ]; then
       ok "已确认 CakeBox 官方 sidecar（${version}）"
+      SIDECAR_REQUIREMENT_STATE="prepared"
       return 0
     fi
   fi
@@ -2598,6 +2628,7 @@ PY
     if ! download_url_file "https://github.com/SagerNet/sing-box/releases/download/v${version}/${archive_name}" "${archive_path}"; then
       cleanup_install_candidate
       warn "无法下载 CakeBox 官方 sidecar；HashCake 安装/更新继续，Web 一键启用暂不可用。可设置 HASHCAKE_SIDECAR_SOURCE 指向配套官方二进制后重试（仍严格校验版本与 SHA-256）"
+      SIDECAR_REQUIREMENT_STATE="failed"
       return 0
     fi
     verify_file_sha256 "${archive_path}" "${archive_sha}" || die "sidecar 压缩包校验失败"
@@ -2621,7 +2652,22 @@ PY
   TXN_SIDECAR_CHANGED=1
   mv -fT "${candidate}" "${SIDECAR_PATH}"
   cleanup_install_candidate
+  SIDECAR_REQUIREMENT_STATE="prepared"
   ok "已准备 CakeBox 隧道组件，可在 Web 后台一键开启"
+}
+
+# 停服之前 prepare_cakebox_sidecar_for 已经跑完；这里只报告结果，
+# 不再启动一次进程探测，避免把这段时间算进矿机端口关闭窗口。
+install_cakebox_sidecar() {
+  case "${SIDECAR_REQUIREMENT_STATE:-}" in
+    prepared|skipped|failed) return 0 ;;
+    *)
+      # 兼容路径：调用点漏了 prepare（例如未来新增的分支）。行为与旧版一致，
+      # 但退化成「装完之后再准备」，只在日志里说明。
+      warn "sidecar 未在停服前准备，正在按旧流程补做"
+      prepare_cakebox_sidecar_for "${BIN_PATH}" || die "无法读取 HashCake 的官方 sidecar 要求，未替换 sidecar"
+      ;;
+  esac
 }
 
 write_service() {
@@ -2718,9 +2764,20 @@ EOF
       die "systemd 服务校验失败，防火墙尚未修改"
     fi
   fi
+  # 内容一致就不要写盘、不要 daemon-reload：更新场景里 unit 通常没变，
+  # 每次重写都会白白多一次 systemd-analyze verify 和一次 reload，
+  # 这两步都落在停服之后/附近，会直接拉长矿机端口关闭窗口。
+  if [ -f "${SERVICE_FILE}" ] && cmp -s "${service_tmp}" "${SERVICE_FILE}"; then
+    rm -f -- "${service_tmp}"
+    # 这里也要 reload：否则 SYSTEMD_RELOADED 保持 0，reload 会被推迟到
+    # restart_service_checked —— 那时服务已经停了，又落回矿机断开窗口。
+    reload_systemd_if_needed || die "无法重新加载 systemd 配置：${SERVICE_FILE}"
+    ok "系统服务配置未变化，沿用 ${SERVICE_FILE}"
+    return 0
+  fi
   TXN_SERVICE_CHANGED=1
   mv -fT "${service_tmp}" "${SERVICE_FILE}"
-  systemctl daemon-reload
+  reload_systemd_if_needed
   ok "已写入 systemd 服务 ${SERVICE_FILE}"
 }
 
@@ -2756,6 +2813,8 @@ EOF
 
 install_service() {
   local admin_state needs_bootstrap=0 bootstrap_log_start=1 token=""
+  # 首次安装没有既存服务可中断，保留两段稳定性确认（HASHCAKE_RESTART_STRICT_CHECK）。
+  RESTART_STRICT_CHECK=1
   preflight_install_or_update
   prepare_install_transaction_environment
   if is_complete_install; then
@@ -2819,11 +2878,14 @@ update_service() {
   configure_web_defaults_for_update
   ensure_metrics_token
   install_config
-  install_binary
-  install_cakebox_sidecar
+  # 顺序要点：install_binary 里那次 systemctl stop 是矿机端口关闭窗口的起点。
+  # 写 unit（含 systemd-analyze verify）、enable、防火墙确认都放在它前面，
+  # 窗口里就只剩一次 mv、一次 daemon-reload 和一次启动。
   write_service
   systemctl enable "${SERVICE_NAME}.service"
   configure_install_firewall
+  install_binary
+  install_cakebox_sidecar
   if [ "${START_AFTER_INSTALL}" = "1" ]; then
     restart_service 0
   else
@@ -2865,9 +2927,18 @@ stop_service() {
   ok "已停止 ${SERVICE_NAME}"
 }
 
+# 受控重启并确认进程稳定。
+#
+# 两段等待的取舍：第一段 `sleep 2` 等进程活过启动瞬态，必须保留。第二段原本
+# 也是 2 秒，只为「PID 没变」再确认一次；unit 里的 RestartSec=2 意味着真崩溃会在
+# 2 秒后由 systemd 拉起并让 NRestarts 加一，而调用方随后还会 systemctl is-active
+# 检查，所以第二段只在「首次安装」这种没有历史基线的场景保留（HASHCAKE_RESTART_STRICT=1），
+# 更新场景直接跳过 —— 那 2 秒正是矿机端口关闭窗口的一部分。
 restart_service_checked() {
-  local restarts_baseline restarts_first restarts_second pid_first pid_second
-  systemctl daemon-reload || return 1
+  local restarts_baseline restarts_first pid_first restarts_second pid_second
+  # 停服前已经 reload 过就不再重复：这条命令在实测机器上约 0.5 秒，
+  # 而它此刻正压在矿机端口关闭窗口里。
+  reload_systemd_if_needed || return 1
   systemctl reset-failed "${SERVICE_NAME}.service" || return 1
   systemctl restart "${SERVICE_NAME}.service" || return 1
   restarts_baseline="$(systemctl show "${SERVICE_NAME}.service" -p NRestarts --value)" || return 1
@@ -2880,6 +2951,7 @@ restart_service_checked() {
   pid_first="$(systemctl show "${SERVICE_NAME}.service" -p MainPID --value)" || return 1
   [ "${restarts_first}" = "0" ] || return 1
   [[ "${pid_first}" =~ ^[0-9]+$ ]] && [ "${pid_first}" -gt 0 ] || return 1
+  [ "${RESTART_STRICT_CHECK}" = "1" ] || return 0
   sleep 2
   if ! systemctl is-active --quiet "${SERVICE_NAME}.service"; then
     return 1
