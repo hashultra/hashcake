@@ -1,5 +1,5 @@
 12d3f474d047377cfd8c0870266179ce6b6731afb3977ef443295fedd3252ec7  README.md
-357d57ed41a669c77194ebbc84c97277203502daabcd9f7e86f210837ba68277  RELEASE_NOTES.md
+ed34c73bba9dc58226991417d6e93b7eaa988d9e30bc6c87ec3cf2c05c98a6ed  RELEASE_NOTES.md
 8ab82e0a01c3f05a4ef7f9efdae66999164b6be78dc411db2ccfea4f7d2ba2c7  customer/1/README.md
 fcf19f3b79255cba7ec580804041b4e4bda7356340362849a99c887f1cbf575a  customer/1/RELEASE_NOTES.md
 5c5b16352fd66cc3d1fb393f73386ba1a0ddb5019e34a898b0c43482c70ab010  customer/1/install.sh
@@ -31,6 +31,7 @@ fd08f497a956943a4dbea22dfdb06fd354ae706e668e592a61735602001de46a  linux-amd64/ha
 8f6ff0fe7e8c7849c88ee62729d827bc984aec54ef39b5b3fef023aac8b5ca0b  linux-amd64/hashcake-0.1.19-linux-amd64
 2bde678212926f939c27bde92b3e8fd80b3dbd23043ecce698327d96173ba490  linux-amd64/hashcake-0.1.2-linux-amd64
 ad38eb35402230f2e44e4325ce79c1873b64e8c4b381afcc36e704414058bce6  linux-amd64/hashcake-0.1.20-linux-amd64
+bbccd4864cacd4da84d73a2ed547050aa7434e1002f597b1930e1555d7b5d512  linux-amd64/hashcake-0.1.21-linux-amd64
 11a14dc6b65a9b43ad89c53e906692c3539a39e4e8c83e1db226a25e4cc8d55d  linux-amd64/hashcake-0.1.4-linux-amd64
 d88670b53bfdcf7fab382972adadef7548841c02cef8f122bf05c38021e7906c  linux-amd64/hashcake-0.1.5-linux-amd64
 113bc07e23de42f0414a9f99d1becb40d4197dec2e0b66f42aba82b20e236b38  linux-amd64/hashcake-0.1.6-linux-amd64
@@ -48,4 +49,5 @@ bfa77aed6735b8c4ffc420cd8ee190e1352b16ea7e50c0977ac78e1c0d81c684  windows/hashca
 27346bb7eacd174e9b54bc9fcbe292f98e934c03f4f0197d310e11889d0e237f  windows/hashcake-0.1.18-windows.exe
 1f7ec62c6ada27e08f4e11ce0afb1a8387362968a2311165b325f449ce26bb28  windows/hashcake-0.1.19-windows.exe
 6a57d1dc57606e624142677d69d3da4aaa4cd88c3b897e0697f83c98269b7943  windows/hashcake-0.1.20-windows.exe
+9b88fc5b959d22da218239627fb9c55cb8d2293514926c7d9d2b10b5e55a0af3  windows/hashcake-0.1.21-windows.exe
 08656905ecaf3897ddbb54c9e9a5c405969dfae5e0c0cd0b141db33b68fbc5f7  windows/hashcake-0.1.9-windows.exe
