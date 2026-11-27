@@ -1,15 +1,18 @@
-# HashCake v0.1.21
+# HashCake v0.1.22
 
 本版本同时提供 Linux AMD64 与 Windows AMD64。
 
 ## 更新内容
 
-- 大幅降低 ZEC 算力损耗和拒绝率。
+- **日志存储与降噪**：默认将标准错误输出限制为 `WARN` 及以上级别，避免长期运行或高频重连场景下未轮转错误日志文件持续膨胀；异常冷却期内重复的 `unknown job` 提交日志自动折叠，保持核心指标与计数完整准确。
+- **矿池握手与连接优化**：新增有界 `mining.configure` 协商负缓存并跳过 Sia（SC）币种扩展协商，消除部分矿池（如 SC、DASH 及部分 LTC 矿池）每次建连固定 3 秒超时的惩罚。
+- **LTC / Scrypt 与 ZEC 稳定性**：引入零提交 `safety_deadline` 指数退避机制；对卡在已终结任务上的 Scrypt 矿机自动平滑下发最新任务而不断开连接；修复 ZEC 矿机已达标提交误触发同任务刷新引发重复提交的问题。
+- **监控指标清理**：过滤端口热切换币种后产生的全零旧币种幽灵指标序列，完整保留非零历史统计数据。
 
 ## 文件
 
-- hashcake-0.1.21-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
-- hashcake-0.1.21-windows.exe：HashCake 服务端 Windows x64 程序，已内嵌 Web 管理后台。
+- hashcake-0.1.22-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
+- hashcake-0.1.22-windows.exe：HashCake 服务端 Windows x64 程序，已内嵌 Web 管理后台。
 
 Release 资产只包含二进制文件。安装脚本位于仓库根目录 `install.sh`。
 
