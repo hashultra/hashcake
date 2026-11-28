@@ -2428,6 +2428,47 @@ extract_hashcake_version() {
     | awk '$1 == "hashcake" && NF == 2 { print $2; exit }'
 }
 
+verify_candidate_release_signature() {
+  local candidate_bin="$1" help_out verify_out expected_edition="${EDITION_ID:-0}"
+  [ "${HASHCAKE_SKIP_SIGNATURE_VERIFY:-0}" != "1" ] || return 0
+  [ -n "${EXPECTED_BINARY_VERSION:-}" ] || return 0
+  [ -x "${BIN_PATH}" ] && [ ! -L "${BIN_PATH}" ] || return 0
+  help_out="$(run_hashcake_as_service_user "${BIN_PATH}" --help 2>&1 || true)"
+  case "${help_out}" in
+    *verify-release*) ;;
+    *) return 0 ;;
+  esac
+  if command_exists timeout; then
+    verify_out="$(run_hashcake_as_service_user timeout 20 "${BIN_PATH}" verify-release \
+      --file "${candidate_bin}" \
+      --version "${EXPECTED_BINARY_VERSION}" \
+      --edition-id "${expected_edition}" \
+      --platform "${RELEASE_PLATFORM}" 2>&1)" && {
+      ok "候选二进制已通过内置 Ed25519 发布签名与版本身份校验"
+      return 0
+    }
+  else
+    verify_out="$(run_hashcake_as_service_user "${BIN_PATH}" verify-release \
+      --file "${candidate_bin}" \
+      --version "${EXPECTED_BINARY_VERSION}" \
+      --edition-id "${expected_edition}" \
+      --platform "${RELEASE_PLATFORM}" 2>&1)" && {
+      ok "候选二进制已通过内置 Ed25519 发布签名与版本身份校验"
+      return 0
+    }
+  fi
+  case "${verify_out}" in
+    *"no release verify public key configured"*)
+      if [ -n "${HASHCAKE_BIN_SOURCE:-}" ]; then
+        warn "当前运行二进制未内嵌发布公钥，跳过本地自定义包 Ed25519 验签"
+        return 0
+      fi
+      ;;
+  esac
+  printf '%s\n' "${verify_out}" >&2
+  return 1
+}
+
 install_binary() {
   local src="${HASHCAKE_BIN_SOURCE:-}" candidate_dir candidate candidate_manifest
   local source_manifest source_label version_output actual_version
@@ -2469,6 +2510,10 @@ install_binary() {
   if [ -f "${candidate_manifest}" ]; then
     chmod 0644 "${candidate_manifest}"
     chown root:root "${candidate_manifest}"
+  fi
+  if ! verify_candidate_release_signature "${candidate}"; then
+    rm -rf -- "${candidate_dir}"
+    die "HashCake 候选二进制发布签名或版本身份校验未通过，已中止本次变更，旧二进制与运行中的服务均未改动。"
   fi
   if command_exists timeout; then
     if ! version_output="$(run_hashcake_as_service_user timeout 15 "${candidate}" --version 2>&1)"; then
@@ -2867,6 +2912,7 @@ install_service() {
     ok "已安装，未自动启动"
   fi
   commit_install_transaction
+  install_web_updater
   print_install_result
 }
 
@@ -2893,6 +2939,7 @@ update_service() {
     ok "已更新，未自动启动"
   fi
   commit_install_transaction
+  install_web_updater
   cat <<EOF
 
 ========== HashCake 更新结果 ==========
@@ -2902,6 +2949,422 @@ update_service() {
 提示: 更新已保留 Web 端口、安全访问路径、账号、令牌、配置和状态目录。
 EOF
   print_install_firewall_notice
+}
+
+install_web_updater() {
+  [ "${HASHCAKE_ENABLE_WEB_UPDATER:-1}" != "0" ] || return 0
+  has_systemd || return 0
+  command_exists python3 || { warn "缺少 python3，跳过网页一键更新代理注册"; return 0; }
+  local systemd_dir updater_path_file updater_service_file upgrade_dir
+  local cached_installer runner_script expected_edition="${EDITION_ID:-0}"
+  local repo_installer_rel="install.sh" installer_sha="" tmp_installer=""
+  local unit_changed=0 service_tmp path_tmp agent_tmp
+  systemd_dir="$(dirname -- "${SERVICE_FILE}")"
+  updater_path_file="${systemd_dir}/${SERVICE_NAME}-updater.path"
+  updater_service_file="${systemd_dir}/${SERVICE_NAME}-updater.service"
+  upgrade_dir="${STATE_DIR}/upgrade"
+  cached_installer="${INSTALLER_STATE_DIR}/install.sh"
+  runner_script="${INSTALLER_STATE_DIR}/run-web-upgrade.sh"
+
+  ensure_installer_state_dir
+  if [ -L "${upgrade_dir}" ]; then
+    warn "更新状态目录是符号链接，跳过网页一键更新代理注册：${upgrade_dir}"
+    return 0
+  fi
+  install -d -m 0750 -o "${SERVICE_USER}" -g "${SERVICE_GROUP}" "${upgrade_dir}"
+
+  if [ -f "${SCRIPT_SOURCE}" ] && [ ! -L "${SCRIPT_SOURCE}" ] && [ -r "${SCRIPT_SOURCE}" ]; then
+    tmp_installer="$(mktemp "${INSTALLER_STATE_DIR}/.install.sh.XXXXXX")"
+    install -m 0700 -o root -g root "${SCRIPT_SOURCE}" "${tmp_installer}"
+    mv -fT -- "${tmp_installer}" "${cached_installer}"
+  elif command_exists curl; then
+    tmp_installer="$(mktemp "${INSTALLER_STATE_DIR}/.install.sh.XXXXXX")"
+    if installer_sha="$(repo_asset_sha256 "${repo_installer_rel}" 2>/dev/null)" \
+      && download_repo_file "${repo_installer_rel}" "${tmp_installer}" "${installer_sha}" 2>/dev/null; then
+      chmod 0700 "${tmp_installer}"
+      chown root:root "${tmp_installer}"
+      mv -fT -- "${tmp_installer}" "${cached_installer}"
+    else
+      rm -f -- "${tmp_installer}"
+    fi
+  fi
+  if [ ! -x "${cached_installer}" ] || [ -L "${cached_installer}" ]; then
+    warn "未能缓存本地安装脚本，暂不启用网页一键更新代理"
+    return 0
+  fi
+
+  local runner_tmp
+  runner_tmp="$(mktemp "${INSTALLER_STATE_DIR}/.run-web-upgrade.XXXXXX")"
+  cat > "${runner_tmp}" <<EOF
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SERVICE_NAME='${SERVICE_NAME}'
+SERVICE_USER='${SERVICE_USER}'
+SERVICE_GROUP='${SERVICE_GROUP}'
+INSTALL_DIR='${INSTALL_DIR}'
+CONFIG_FILE='${CONFIG_FILE}'
+STATE_DIR='${STATE_DIR}'
+LOG_DIR='${LOG_DIR}'
+BIN_PATH='${BIN_PATH}'
+INSTALLER_STATE_DIR='${INSTALLER_STATE_DIR}'
+RELEASE_REPO='${RELEASE_REPO}'
+RELEASE_PLATFORM='${RELEASE_PLATFORM}'
+EXPECTED_EDITION_ID='${expected_edition}'
+CACHED_INSTALLER='${cached_installer}'
+EOF
+  cat >> "${runner_tmp}" <<'EOF'
+UPGRADE_DIR="${STATE_DIR}/upgrade"
+REQUEST_FILE="${UPGRADE_DIR}/request.json"
+STATUS_FILE="${UPGRADE_DIR}/status.json"
+LOCK_FILE="${INSTALLER_STATE_DIR}/web-upgrade.lock"
+LOG_FILE="${INSTALLER_STATE_DIR}/web-upgrade.log"
+ROLLBACK_BIN="${INSTALLER_STATE_DIR}/web-upgrade-rollback.bin"
+STABLE_SECS="${HASHCAKE_UPGRADE_STABLE_SECS:-15}"
+
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"${LOCK_FILE}"
+  flock -n 9 || exit 0
+fi
+
+[ -f "${REQUEST_FILE}" ] && [ ! -L "${REQUEST_FILE}" ] || exit 0
+[ ! -L "${UPGRADE_DIR}" ] || exit 1
+
+PARSED="$(python3 - "${REQUEST_FILE}" "${EXPECTED_EDITION_ID}" <<'PY'
+import json, re, sys
+from pathlib import Path
+
+req_path = Path(sys.argv[1])
+expected_edition = int(sys.argv[2])
+if req_path.is_symlink() or not req_path.is_file() or req_path.stat().st_size > 32768:
+    raise SystemExit("invalid request file")
+data = json.loads(req_path.read_text(encoding="utf-8"))
+if data.get("schema_version") != 1:
+    raise SystemExit("unsupported schema_version")
+req_id = str(data.get("request_id", ""))
+target = str(data.get("target_version", ""))
+current = str(data.get("current_version", ""))
+edition = int(data.get("edition_id", -1))
+use_mirror = bool(data.get("use_mirror", False))
+if not re.fullmatch(r"[A-Za-z0-9_-]{4,64}", req_id):
+    raise SystemExit("invalid request_id")
+if not re.fullmatch(r"(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})\.(0|[1-9][0-9]{0,4})", target):
+    raise SystemExit("invalid target_version")
+if edition != expected_edition:
+    raise SystemExit("edition mismatch")
+print(f"{req_id}\t{target}\t{current}\t{'1' if use_mirror else '0'}")
+PY
+)" || {
+  rm -f -- "${REQUEST_FILE}"
+  exit 0
+}
+
+# Consume request.json immediately so systemd.path never loops on failure.
+rm -f -- "${REQUEST_FILE}"
+IFS=$'\t' read -r REQ_ID TARGET_VER FROM_VER USE_MIRROR <<< "${PARSED}"
+STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+: > "${LOG_FILE}"
+chmod 0600 "${LOG_FILE}"
+
+write_status() {
+  local state="$1" progress="$2" message="$3" error_msg="${4:-}" finished="${5:-0}"
+  python3 - "${STATUS_FILE}" "${SERVICE_USER}" "${SERVICE_GROUP}" \
+    "${REQ_ID}" "${state}" "${progress}" "${FROM_VER}" "${TARGET_VER}" "${USE_MIRROR}" \
+    "${STARTED_AT}" "${message}" "${error_msg}" "${finished}" "${LOG_FILE}" <<'PY'
+import datetime, grp, json, os, pwd, sys, tempfile
+from pathlib import Path
+
+(
+    status_path_s, user_s, group_s, req_id, state, progress_s,
+    from_ver, target_ver, use_mirror_s, started_at, message, error_msg, finished_s, log_path_s
+) = sys.argv[1:15]
+status_path = Path(status_path_s)
+if status_path.is_symlink() or status_path.parent.is_symlink():
+    raise SystemExit(1)
+
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+log_tail = []
+log_path = Path(log_path_s)
+if log_path.is_file():
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    log_tail = [line[:280] for line in lines[-35:] if line.strip()]
+
+payload = {
+    "schema_version": 1,
+    "request_id": req_id,
+    "state": state,
+    "progress": max(0, min(100, int(progress_s))),
+    "from_version": from_ver or None,
+    "target_version": target_ver,
+    "use_mirror": use_mirror_s == "1",
+    "started_at": started_at,
+    "updated_at": now,
+    "finished_at": now if finished_s == "1" else None,
+    "message": message,
+    "error": error_msg or None,
+    "log_tail": log_tail,
+}
+fd, tmp_name = tempfile.mkstemp(prefix=".status.json.tmp.", dir=str(status_path.parent))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False, indent=2)
+        fh.write("\n")
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp_name, 0o640)
+    try:
+        uid = pwd.getpwnam(user_s).pw_uid
+        gid = grp.getgrnam(group_s).gr_gid
+        os.chown(tmp_name, uid, gid)
+    except KeyError:
+        pass
+    os.replace(tmp_name, status_path)
+except Exception:
+    try:
+        os.unlink(tmp_name)
+    except OSError:
+        pass
+    raise
+PY
+}
+
+append_log() {
+  printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*" >> "${LOG_FILE}"
+}
+
+run_as_svc() {
+  if [ "${HASHCAKE_UPGRADE_NO_SU:-0}" = "1" ]; then
+    HASHCAKE_ENVELOPE_EXEC_DIR="${STATE_DIR}" "$@"
+  elif command -v runuser >/dev/null 2>&1; then
+    runuser -u "${SERVICE_USER}" -- env HASHCAKE_ENVELOPE_EXEC_DIR="${STATE_DIR}" "$@"
+  else
+    su -s /bin/sh "${SERVICE_USER}" -c 'HASHCAKE_ENVELOPE_EXEC_DIR="$1"; shift; export HASHCAKE_ENVELOPE_EXEC_DIR; exec "$@"' -- "${STATE_DIR}" "$@"
+  fi
+}
+
+file_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+rollback_to_backup() {
+  local reason="$1" restore_tmp=""
+  append_log "触发自动回滚：${reason}"
+  write_status "restarting" 88 "新版本稳定性检查未通过，正在自动回滚至 v${FROM_VER}..." "${reason}" 0
+  systemctl stop "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+  if [ -f "${ROLLBACK_BIN}" ] && [ ! -L "${ROLLBACK_BIN}" ]; then
+    restore_tmp="$(mktemp "${INSTALL_DIR}/.hashcake-rollback.XXXXXX")"
+    cp -f -- "${ROLLBACK_BIN}" "${restore_tmp}"
+    chmod 0755 "${restore_tmp}"
+    chown root:root "${restore_tmp}" 2>/dev/null || true
+    mv -f -- "${restore_tmp}" "${BIN_PATH}"
+    systemctl reset-failed "${SERVICE_NAME}.service" >/dev/null 2>&1 || true
+    if systemctl start "${SERVICE_NAME}.service" >/dev/null 2>&1 \
+      && sleep "${HASHCAKE_UPGRADE_ROLLBACK_WAIT:-2}" \
+      && systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+      append_log "已成功回滚至旧版本并恢复服务运行"
+      write_status "rolled_back" 100 "更新失败，已自动回滚并恢复旧版本运行。" "${reason}" 1
+      return 0
+    fi
+  fi
+  append_log "自动回滚未能恢复服务，请立即人工排查"
+  write_status "failed" 100 "更新失败且自动回滚未能恢复服务，请检查系统日志。" "${reason}" 1
+  return 1
+}
+
+if [ ! -x "${BIN_PATH}" ] || [ -L "${BIN_PATH}" ]; then
+  write_status "failed" 100 "当前二进制路径无效，已中止更新。" "missing or symlink binary: ${BIN_PATH}" 1
+  exit 1
+fi
+
+ACTUAL_INSTALLED_VER="$(run_as_svc "${BIN_PATH}" --version 2>/dev/null | awk '$1 == "hashcake" && NF == 2 { print $2; exit }' || true)"
+if [ -n "${ACTUAL_INSTALLED_VER}" ]; then
+  if ! python3 - "${ACTUAL_INSTALLED_VER}" "${TARGET_VER}" <<'PY'
+import sys
+def parse(v):
+    core = v.strip().lstrip("v").split("-", 1)[0]
+    parts = [int(x) for x in core.split(".")[:3]]
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
+raise SystemExit(0 if parse(sys.argv[2]) > parse(sys.argv[1]) else 1)
+PY
+  then
+    append_log "拒绝降级或重复安装：当前实装 ${ACTUAL_INSTALLED_VER}，请求目标 ${TARGET_VER}"
+    write_status "failed" 100 "目标版本不高于本机已安装版本，已拒绝执行。" "target ${TARGET_VER} <= installed ${ACTUAL_INSTALLED_VER}" 1
+    exit 1
+  fi
+fi
+
+cp -f -- "${BIN_PATH}" "${ROLLBACK_BIN}"
+chmod 0755 "${ROLLBACK_BIN}"
+chown root:root "${ROLLBACK_BIN}" 2>/dev/null || true
+OLD_SHA="$(file_sha256 "${BIN_PATH}" 2>/dev/null || true)"
+
+append_log "开始在线更新 ${FROM_VER} -> ${TARGET_VER}（mirror=${USE_MIRROR}）"
+write_status "downloading" 20 "正在下载 v${TARGET_VER} 并核对 SHA256SUMS 与发布签名..." "" 0
+
+env_args=(
+  "NO_COLOR=1"
+  "HASHCAKE_VERSION=v${TARGET_VER}"
+  "HASHCAKE_SERVICE=${SERVICE_NAME}"
+  "HASHCAKE_USER=${SERVICE_USER}"
+  "HASHCAKE_GROUP=${SERVICE_GROUP}"
+  "HASHCAKE_HOME=${INSTALL_DIR}"
+  "HASHCAKE_CONFIG=${CONFIG_FILE}"
+  "HASHCAKE_STATE_DIR=${STATE_DIR}"
+  "HASHCAKE_LOG_DIR=${LOG_DIR}"
+  "HASHCAKE_INSTALLER_STATE_DIR=${INSTALLER_STATE_DIR}"
+  "HASHCAKE_START_AFTER_INSTALL=1"
+  "HASHCAKE_ENABLE_WEB_UPDATER=0"
+)
+if [ "${USE_MIRROR}" = "1" ]; then
+  env_args+=("HASHCAKE_RELEASE_MIRROR_BASE=https://cdn.jsdmirror.com/gh/${RELEASE_REPO}@main")
+fi
+
+set +e
+env "${env_args[@]}" bash "${CACHED_INSTALLER}" update >> "${LOG_FILE}" 2>&1 &
+UPD_PID=$!
+while kill -0 "${UPD_PID}" 2>/dev/null; do
+  if grep -q "已成组安装" "${LOG_FILE}" 2>/dev/null; then
+    write_status "restarting" 82 "新版本已替换完成，正在重启 HashCake 服务..." "" 0
+  elif grep -q "候选文件已通过预检\|停止服务后成组替换" "${LOG_FILE}" 2>/dev/null; then
+    write_status "installing" 70 "校验通过，正在原子替换程序文件..." "" 0
+  elif grep -q "Ed25519\|配置\|校验" "${LOG_FILE}" 2>/dev/null; then
+    write_status "verifying" 50 "正在校验候选包签名、版本及配置兼容性..." "" 0
+  fi
+  sleep 1
+done
+wait "${UPD_PID}"
+UPD_RC=$?
+set -e
+
+if [ "${UPD_RC}" -ne 0 ]; then
+  ERR_LINE="$(grep -E '错误:|FAIL' "${LOG_FILE}" | tail -n 1 || true)"
+  [ -n "${ERR_LINE}" ] || ERR_LINE="安装脚本退出码 ${UPD_RC}"
+  NEW_SHA="$(file_sha256 "${BIN_PATH}" 2>/dev/null || true)"
+  if [ -n "${OLD_SHA}" ] && [ "${NEW_SHA}" = "${OLD_SHA}" ] && systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+    append_log "预检或安装阶段中止，旧版本保持在线：${ERR_LINE}"
+    write_status "failed" 100 "更新未应用，旧版本保持正常运行。" "${ERR_LINE}" 1
+  else
+    rollback_to_backup "${ERR_LINE}" || true
+  fi
+  exit 1
+fi
+
+write_status "verifying_health" 90 "新版本已启动，正在执行 ${STABLE_SECS} 秒连续稳定性检查..." "" 0
+append_log "进入 ${STABLE_SECS} 秒稳定性检查窗口"
+
+VER_CHECK="$(run_as_svc "${BIN_PATH}" --version 2>/dev/null || true)"
+if ! printf '%s\n' "${VER_CHECK}" | grep -Fq "hashcake ${TARGET_VER}"; then
+  rollback_to_backup "安装后版本校验不符（实际：${VER_CHECK:-空}，期望：hashcake ${TARGET_VER}）" || true
+  exit 1
+fi
+
+PID_BASELINE="$(systemctl show "${SERVICE_NAME}.service" -p MainPID --value 2>/dev/null || echo 0)"
+if ! [[ "${PID_BASELINE}" =~ ^[0-9]+$ ]] || [ "${PID_BASELINE}" -le 0 ]; then
+  rollback_to_backup "新版本服务未获得有效 MainPID" || true
+  exit 1
+fi
+
+elapsed=0
+while [ "${elapsed}" -lt "${STABLE_SECS}" ]; do
+  sleep 1
+  elapsed=$((elapsed + 1))
+  if ! systemctl is-active --quiet "${SERVICE_NAME}.service"; then
+    rollback_to_backup "新版本在第 ${elapsed} 秒退出（非 active 状态）" || true
+    exit 1
+  fi
+  CUR_RESTARTS="$(systemctl show "${SERVICE_NAME}.service" -p NRestarts --value 2>/dev/null || echo 1)"
+  CUR_PID="$(systemctl show "${SERVICE_NAME}.service" -p MainPID --value 2>/dev/null || echo 0)"
+  if [ "${CUR_RESTARTS}" != "0" ] || [ "${CUR_PID}" != "${PID_BASELINE}" ]; then
+    rollback_to_backup "新版本在第 ${elapsed} 秒发生重启（NRestarts=${CUR_RESTARTS}）" || true
+    exit 1
+  fi
+done
+
+append_log "更新成功并通过 ${STABLE_SECS} 秒连续稳定运行检查（PID=${PID_BASELINE}）"
+write_status "succeeded" 100 "已成功更新至 v${TARGET_VER} 并通过稳定性检查。" "" 1
+EOF
+  chmod 0700 "${runner_tmp}"
+  chown root:root "${runner_tmp}"
+  mv -fT -- "${runner_tmp}" "${runner_script}"
+
+  service_tmp="$(mktemp "${systemd_dir}/.${SERVICE_NAME}-updater.XXXXXX.service")"
+  cat > "${service_tmp}" <<EOF
+[Unit]
+Description=HashCake Privileged Web Self-Updater
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=${runner_script}
+TimeoutStartSec=900
+EOF
+  chmod 0644 "${service_tmp}"
+  chown root:root "${service_tmp}"
+  if [ ! -f "${updater_service_file}" ] || ! cmp -s "${service_tmp}" "${updater_service_file}"; then
+    mv -fT -- "${service_tmp}" "${updater_service_file}"
+    unit_changed=1
+  else
+    rm -f -- "${service_tmp}"
+  fi
+
+  path_tmp="$(mktemp "${systemd_dir}/.${SERVICE_NAME}-updater.XXXXXX.path")"
+  cat > "${path_tmp}" <<EOF
+[Unit]
+Description=Watch HashCake Web Self-Upgrade Requests
+
+[Path]
+PathExists=${upgrade_dir}/request.json
+PathChanged=${upgrade_dir}/request.json
+Unit=${SERVICE_NAME}-updater.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${path_tmp}"
+  chown root:root "${path_tmp}"
+  if [ ! -f "${updater_path_file}" ] || ! cmp -s "${path_tmp}" "${updater_path_file}"; then
+    mv -fT -- "${path_tmp}" "${updater_path_file}"
+    unit_changed=1
+  else
+    rm -f -- "${path_tmp}"
+  fi
+
+  if [ "${unit_changed}" = "1" ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+  fi
+  if ! systemctl enable --now "${SERVICE_NAME}-updater.path" >/dev/null 2>&1; then
+    warn "未能启动 ${SERVICE_NAME}-updater.path，网页一键更新暂不可用"
+    return 0
+  fi
+
+  agent_tmp="$(mktemp "${upgrade_dir}/.agent.json.XXXXXX")"
+  python3 - "${agent_tmp}" "${RELEASE_PLATFORM}" "${expected_edition}" <<'PY'
+import datetime, json, sys
+payload = {
+    "schema_version": 1,
+    "platform": sys.argv[2],
+    "mode": "systemd-path",
+    "edition_id": int(sys.argv[3]),
+    "mirror_supported": True,
+    "installed_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}
+with open(sys.argv[1], "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, indent=2)
+    fh.write("\n")
+PY
+  chmod 0640 "${agent_tmp}"
+  chown "root:${SERVICE_GROUP}" "${agent_tmp}"
+  mv -fT -- "${agent_tmp}" "${upgrade_dir}/agent.json"
+  ok "已启用网页一键安全更新代理（${SERVICE_NAME}-updater.path）"
 }
 
 start_service() {
@@ -3324,9 +3787,13 @@ uninstall() {
     fi
   fi
   [ "${confirm}" = "yes" ] || die "已取消卸载"
+  systemctl stop "${SERVICE_NAME}-updater.path" "${SERVICE_NAME}-updater.service" 2>/dev/null || true
+  systemctl disable "${SERVICE_NAME}-updater.path" 2>/dev/null || true
   systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
   systemctl disable "${SERVICE_NAME}.service" 2>/dev/null || true
-  rm -f "${SERVICE_FILE}"
+  local systemd_dir
+  systemd_dir="$(dirname -- "${SERVICE_FILE}")"
+  rm -f "${SERVICE_FILE}" "${systemd_dir}/${SERVICE_NAME}-updater.path" "${systemd_dir}/${SERVICE_NAME}-updater.service"
   systemctl daemon-reload 2>/dev/null || true
   rm -rf "${INSTALL_DIR}"
   ok "已卸载 ${APP_NAME}"

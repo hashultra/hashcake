@@ -1,17 +1,17 @@
-# HashCake v0.1.25
+# HashCake v0.1.26
 
 本版本同时提供 Linux AMD64 与 Windows AMD64。
 
 ## 更新内容
 
-- **LTC / ZEC 跨池抽水拒绝率优化**：将 Scrypt（LTC）与 SHA256d（BTC）的跨池抽水入场批次分离（LTC 设为 2 份、BTC 保持 1 份、DASH 保持 3 份），并将 Equihash（ZEC）调整为 2 份入场、3 份回切，在保持快速首次触发与精准比例收敛的同时，显著降低切换尾部 `stale-work` 与 LTC 超时回退。
-- **Sia（SC）重连难度下发兼容性修复**：针对部分 SC 矿机固件忽略与 `mining.notify` 同帧捆绑的难度更新、且忽略重复 `job_id` 的问题，改为先单独下发 `mining.set_difficulty` 并等待 100ms，再发送 `mining.notify(clean=true)`，进一步减少重连首任务 `nonce not satisfied` 拒绝。
-- **错误日志进一步降噪**：将运行超过 120 秒且首次正常空闲断开（EOF）的备用抽水上游重连日志从告警降级为普通运行日志，大幅减少 `hashcake.err.log` 噪音，主矿池断线、短命断链与异常错误仍完整保留告警。
+- **Web 后台一键安全更新（Linux + Windows）**：在「更新日志」页面新增一键更新按钮、二次确认弹窗、国内高速镜像开关及实时进度与日志回显；底层通过权限分离的本机更新代理（Linux `systemd` `.path`/`.service`，Windows `SYSTEM` 计划任务，零新增监听端口）完成下载、替换与重启。
+- **内置发布签名校验与自动回滚保护**：新增 `verify-release` 验签能力，更新停服前自动核对 `SHA256SUMS`、内置 Ed25519 发布签名、配置兼容性与版本身份（矿机断连窗口与命令行 `install.sh update` 一致）；新版本启动后连续执行 15 秒稳定性检查，若崩溃或异常将自动回滚至原版本。
+- **老部署平滑过渡**：尚未启用更新代理的旧服务器在页面中保留原命令行更新入口，再通过官方安装脚本更新一次即可自动开启后续全部网页直更。
 
 ## 文件
 
-- hashcake-0.1.25-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
-- hashcake-0.1.25-windows.exe：HashCake 服务端 Windows x64 程序，已内嵌 Web 管理后台。
+- hashcake-0.1.26-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
+- hashcake-0.1.26-windows.exe：HashCake 服务端 Windows x64 程序，已内嵌 Web 管理后台。
 
 Release 资产只包含二进制文件。安装脚本位于仓库根目录 `install.sh`。
 
