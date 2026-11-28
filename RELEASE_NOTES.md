@@ -1,18 +1,17 @@
-# HashCake v0.1.24
+# HashCake v0.1.25
 
 本版本同时提供 Linux AMD64 与 Windows AMD64。
 
 ## 更新内容
 
-- **管理后台新版本提示**：左上角版本号旁新增新版本提示（侧栏折叠、窄屏及移动端同步展示），检测到新稳定版本时点击即可直达「更新日志」页面查看更新内容与升级命令。
-- **跨池抽水触发响应与比例收敛优化**：优化 BTC、LTC、ZEC 等跨池场景下的抽水入场节奏，大幅缩短矿机上线或重连后首次触发抽水的等待时间，消除部分矿机长时间未进入抽水的现象并提升实测比例收敛精度，同时保持 DASH 长驻留稳定性。
-- **Sia（SC）重连首任务稳定性提升**：SC 矿机重连或上游会话切换后的首个任务强制下发 `clean_jobs` 并增加目标同步确认间隔，进一步降低 `nonce not satisfied` 拒绝。
-- **错误日志降噪**：将闲置待命上游链路的正常断开归类至普通运行日志，显著减少错误日志刷屏，活跃链路与异常故障仍保留完整告警。
+- **LTC / ZEC 跨池抽水拒绝率优化**：将 Scrypt（LTC）与 SHA256d（BTC）的跨池抽水入场批次分离（LTC 设为 2 份、BTC 保持 1 份、DASH 保持 3 份），并将 Equihash（ZEC）调整为 2 份入场、3 份回切，在保持快速首次触发与精准比例收敛的同时，显著降低切换尾部 `stale-work` 与 LTC 超时回退。
+- **Sia（SC）重连难度下发兼容性修复**：针对部分 SC 矿机固件忽略与 `mining.notify` 同帧捆绑的难度更新、且忽略重复 `job_id` 的问题，改为先单独下发 `mining.set_difficulty` 并等待 100ms，再发送 `mining.notify(clean=true)`，进一步减少重连首任务 `nonce not satisfied` 拒绝。
+- **错误日志进一步降噪**：将运行超过 120 秒且首次正常空闲断开（EOF）的备用抽水上游重连日志从告警降级为普通运行日志，大幅减少 `hashcake.err.log` 噪音，主矿池断线、短命断链与异常错误仍完整保留告警。
 
 ## 文件
 
-- hashcake-0.1.24-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
-- hashcake-0.1.24-windows.exe：HashCake 服务端 Windows x64 程序，已内嵌 Web 管理后台。
+- hashcake-0.1.25-linux-amd64：HashCake 服务端 linux-amd64 可执行文件，已内嵌 Web 管理后台。
+- hashcake-0.1.25-windows.exe：HashCake 服务端 Windows x64 程序，已内嵌 Web 管理后台。
 
 Release 资产只包含二进制文件。安装脚本位于仓库根目录 `install.sh`。
 
